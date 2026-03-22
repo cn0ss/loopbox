@@ -62,32 +62,35 @@ pub fn write_pty_output_to_log(
 }
 
 pub fn follow_log_output<F>(
-    log_file_path: &Path,
-    initial_offset: u64,
+    log_file: &Path,
+    mut offset: u64,
     stop: Arc<AtomicBool>,
-    mut on_data: F,
+    file_length_fn: impl Fn(&Path) -> Result<u64, String>,
+    read_delta_fn: F,
 ) -> Result<(), String>
 where
-    F: FnMut(&[u8]),
+    F: Fn(&Path, u64) -> Result<(Vec<u8>, u64), String>,
 {
-    // Simple polling-based log follow (works cross-platform)
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::Write;
     use std::thread;
     use std::time::Duration;
 
-    let mut file = std::fs::File::open(log_file_path)
-        .map_err(|e| format!("Failed to open log file: {e}"))?;
-    file.seek(SeekFrom::Start(initial_offset))
-        .map_err(|e| format!("Failed to seek: {e}"))?;
-
-    let mut buf = vec![0u8; 8192];
+    offset = offset.min(file_length_fn(log_file).unwrap_or(0));
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-        match file.read(&mut buf) {
-            Ok(0) => thread::sleep(Duration::from_millis(120)),
-            Ok(n) => on_data(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(format!("Log read error: {e}")),
+        if log_file.exists() {
+            match read_delta_fn(log_file, offset) {
+                Ok((bytes, end_offset)) => {
+                    offset = end_offset;
+                    if !bytes.is_empty() {
+                        let mut stdout = std::io::stdout().lock();
+                        let _ = stdout.write_all(&bytes);
+                        let _ = stdout.flush();
+                    }
+                }
+                Err(err) => eprintln!("Loopbox runtime attach log warning: {err}"),
+            }
         }
+        thread::sleep(Duration::from_millis(120));
     }
     Ok(())
 }
