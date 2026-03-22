@@ -1,3 +1,4 @@
+mod platform;
 #[macro_use]
 mod loopbox;
 mod app;

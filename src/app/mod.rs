@@ -1,6 +1,6 @@
 mod components;
 pub(crate) mod log_window;
-mod models;
+pub(crate) mod models;
 mod pages;
 mod sidebar;
 mod tray;

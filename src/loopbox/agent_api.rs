@@ -19,8 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::io::Read;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -1146,11 +1144,7 @@ fn load_or_create_api_token(path: &FsPath) -> Result<String, String> {
     let token = generate_api_token();
     fs::write(path, format!("{token}\n"))
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))?;
-    #[cfg(unix)]
-    {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|err| format!("Failed to secure {} permissions: {err}", path.display()))?;
-    }
+    crate::platform::runtime::secure_file_permissions(path)?;
     Ok(token)
 }
 

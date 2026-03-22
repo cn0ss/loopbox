@@ -380,24 +380,8 @@ fn port_reachable(ip: &str, port: u16, timeout_ms: u64) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)).is_ok()
 }
 
-#[cfg(unix)]
 fn loopback_alias_present(ip: &str) -> bool {
-    let output = Command::new("/sbin/ifconfig").arg("lo0").output();
-    let Ok(output) = output else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    let listing = String::from_utf8_lossy(&output.stdout);
-    listing
-        .lines()
-        .any(|line| line.contains("inet ") && line.contains(ip))
-}
-
-#[cfg(not(unix))]
-fn loopback_alias_present(_ip: &str) -> bool {
-    true
+    crate::platform::networking::loopback_alias_present(ip)
 }
 
 #[cfg(test)]

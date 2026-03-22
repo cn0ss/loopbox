@@ -3,7 +3,7 @@ use crate::loopbox::{ProjectConfig, ServiceEntry};
 // ── Navigation ──
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum Page {
+pub(crate) enum Page {
     Sandboxes,
     NewSandbox,
     Runtime,
@@ -32,14 +32,14 @@ pub(super) enum RuntimeFilter {
 // ── Notifications ──
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum NoticeKind {
+pub(crate) enum NoticeKind {
     Success,
     Error,
     Info,
 }
 
 impl NoticeKind {
-    pub(super) fn class_name(&self) -> &'static str {
+    pub(crate) fn class_name(&self) -> &'static str {
         match self {
             Self::Success => "notice-success",
             Self::Error => "notice-error",
@@ -49,27 +49,27 @@ impl NoticeKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Notice {
-    pub(super) kind: NoticeKind,
-    pub(super) message: String,
+pub(crate) struct Notice {
+    pub(crate) kind: NoticeKind,
+    pub(crate) message: String,
 }
 
 impl Notice {
-    pub(super) fn success(message: impl Into<String>) -> Self {
+    pub(crate) fn success(message: impl Into<String>) -> Self {
         Self {
             kind: NoticeKind::Success,
             message: message.into(),
         }
     }
 
-    pub(super) fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
             kind: NoticeKind::Error,
             message: message.into(),
         }
     }
 
-    pub(super) fn info(message: impl Into<String>) -> Self {
+    pub(crate) fn info(message: impl Into<String>) -> Self {
         Self {
             kind: NoticeKind::Info,
             message: message.into(),

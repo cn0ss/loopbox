@@ -45,57 +45,10 @@ pub(super) fn ensure_directory_exists(path: &str) -> Result<String, String> {
 pub(super) fn select_directory_via_native_dialog(
     start_dir: Option<&str>,
 ) -> Result<Option<String>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let default_dir = start_dir
-            .map(expand_tilde_path)
-            .filter(|path| Path::new(path).is_dir());
-        let escaped_default = default_dir
-            .as_ref()
-            .map(|path| escape_applescript_string(path));
-        let prompt = "Select project directory for Loopbox";
-        let script = if let Some(default) = escaped_default {
-            format!(
-                r#"POSIX path of (choose folder with prompt "{prompt}" default location POSIX file "{default}")"#
-            )
-        } else {
-            format!(r#"POSIX path of (choose folder with prompt "{prompt}")"#)
-        };
-
-        let output = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .output()
-            .map_err(|err| format!("Failed to open native folder picker: {err}"))?;
-
-        if output.status.success() {
-            let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if chosen.is_empty() {
-                return Ok(None);
-            }
-            return ensure_directory_exists(&chosen).map(Some);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if stderr.contains("User canceled") || stderr.contains("(-128)") {
-            return Ok(None);
-        }
-        Err(format!(
-            "Native folder picker failed: {}",
-            stderr.trim().trim_end_matches('.')
-        ))
+    match crate::platform::dialog::select_directory_via_native_dialog(start_dir)? {
+        Some(chosen) => ensure_directory_exists(&chosen).map(Some),
+        None => Ok(None),
     }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = start_dir;
-        Err("Native folder picker is currently supported on macOS only.".to_string())
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn escape_applescript_string(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 pub(super) fn parent_directory(path: &str) -> Option<String> {

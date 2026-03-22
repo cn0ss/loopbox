@@ -34,20 +34,11 @@ pub fn open_terminal_for_service(
 
     let shell_script = shell_steps.join("; ");
 
-    #[cfg(target_os = "macos")]
-    {
-        run_terminal_script_macos(&shell_script)?;
-        if run_command {
-            Ok(format!("Opened Terminal and executed '{service_name}'."))
-        } else {
-            Ok(format!("Opened Terminal for '{service_name}'."))
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = shell_script;
-        Err("Open Terminal is currently supported on macOS only.".to_string())
+    crate::platform::terminal::run_terminal_script(&shell_script)?;
+    if run_command {
+        Ok(format!("Opened Terminal and executed '{service_name}'."))
+    } else {
+        Ok(format!("Opened Terminal for '{service_name}'."))
     }
 }
 
@@ -69,19 +60,10 @@ pub fn open_terminal_attach_for_service(
         shell_quote(input_path.to_string_lossy().as_ref()),
     );
 
-    #[cfg(target_os = "macos")]
-    {
-        run_terminal_script_macos(&shell_script)?;
-        Ok(format!(
-            "Opened Terminal attach session for '{service_name}'."
-        ))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = shell_script;
-        Err("Attach Terminal is currently supported on macOS only.".to_string())
-    }
+    crate::platform::terminal::run_terminal_script(&shell_script)?;
+    Ok(format!(
+        "Opened Terminal attach session for '{service_name}'."
+    ))
 }
 
 pub(super) fn terminal_env_pairs(
@@ -132,39 +114,4 @@ pub(super) fn terminal_env_pairs(
     }
 
     env
-}
-
-#[cfg(target_os = "macos")]
-fn run_terminal_script_macos(shell_script: &str) -> Result<(), String> {
-    let escaped = escape_applescript_string(shell_script);
-    let output = Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg("tell application \"Terminal\"")
-        .arg("-e")
-        .arg("activate")
-        .arg("-e")
-        .arg(format!("do script \"{escaped}\""))
-        .arg("-e")
-        .arg("end tell")
-        .output()
-        .map_err(|err| format!("Failed to launch macOS Terminal: {err}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !stderr.is_empty() {
-            Err(format!("Failed to open Terminal: {stderr}"))
-        } else if !stdout.is_empty() {
-            Err(format!("Failed to open Terminal: {stdout}"))
-        } else {
-            Err(format!("Failed to open Terminal. Exit: {}", output.status))
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn escape_applescript_string(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('"', "\\\"")
 }

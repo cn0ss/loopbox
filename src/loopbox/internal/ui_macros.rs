@@ -24,16 +24,10 @@ macro_rules! define_loopbox_settings_paid_sections {
             let mut support_email_input = use_signal(String::new);
             let mut support_subject_input = use_signal(String::new);
             let mut support_text_input = use_signal(String::new);
-            let build_channel = loopbox::build_channel();
-            let build_channel_label = match build_channel {
-                loopbox::BuildChannel::Community => "community",
-                loopbox::BuildChannel::Commercial => "paid-enabled",
-            };
             let license_tier_label = match loopbox::current_license_tier() {
-                loopbox::LicenseTier::None => "none",
-                loopbox::LicenseTier::Commercial => "commercial",
+                loopbox::LicenseTier::None => "Free (personal use)",
+                loopbox::LicenseTier::Commercial => "Commercial (licensed)",
             };
-            let license_status_label = loopbox::license_status_label();
             let license_activation_available = loopbox::license_activation_available();
             let traffic_capture_enabled = true;
             let edition_label = loopbox::edition_label();
@@ -49,88 +43,49 @@ macro_rules! define_loopbox_settings_paid_sections {
                         span { class: "settings-section-icon", "◈" }
                         div {
                             p { class: "settings-section-title", "License" }
-                            p { class: "settings-section-desc", "Paid plan entitlements and activation." }
+                            p { class: "settings-section-desc", "Commercial license activation. Free for personal use." }
                         }
                     }
                     div { class: "settings-section-body",
-                        div { class: "settings-toggle-row",
-                            div { class: "settings-toggle-info",
-                                span { class: "settings-toggle-label", "Build Channel" }
-                                span { class: "settings-toggle-desc", "{build_channel_label}" }
-                            }
-                            div {}
-                        }
-                        div { class: "settings-toggle-row",
-                            div { class: "settings-toggle-info",
-                                span { class: "settings-toggle-label", "License Status" }
-                                span { class: "settings-toggle-desc", "{license_status_label}" }
-                            }
-                            div {}
-                        }
                         div { class: "settings-toggle-row settings-toggle-row-last",
                             div { class: "settings-toggle-info",
-                                span { class: "settings-toggle-label", "Active Tier" }
+                                span { class: "settings-toggle-label", "Edition" }
                                 span { class: "settings-toggle-desc", "{license_tier_label}" }
                             }
                             div {}
                         }
-                        if build_channel == loopbox::BuildChannel::Commercial {
-                            div { class: "settings-sub-divider" }
-                            div { class: "settings-toggle-row",
-                                div { class: "settings-toggle-info",
-                                    span { class: "settings-toggle-label", "Polar Integration" }
-                                    span { class: "settings-toggle-desc",
-                                        if license_activation_available {
-                                            "available"
-                                        } else {
-                                            "missing (Polar IDs not configured/embedded)"
-                                        }
+                        div { class: "settings-sub-divider" }
+                        label { class: "field",
+                            span { class: "field-label", "License Key" }
+                            input {
+                                class: "field-input",
+                                value: "{license_key_input}",
+                                placeholder: "lbx-com-...",
+                                oninput: move |evt| license_key_input.set(evt.value()),
+                            }
+                        }
+                        div { class: "settings-save-row",
+                            button {
+                                class: "btn btn-primary",
+                                onclick: move |_| {
+                                    let license_key = license_key_input();
+                                    if license_key.trim().is_empty() {
+                                        notice.set(Some(Notice::error("Enter a license key.".to_string())));
+                                        return;
                                     }
-                                }
-                                div {}
-                            }
-                            label { class: "field",
-                                span { class: "field-label", "License Key" }
-                                input {
-                                    class: "field-input",
-                                    value: "{license_key_input}",
-                                    placeholder: "lbx-pro-...",
-                                    oninput: move |evt| license_key_input.set(evt.value()),
-                                }
-                            }
-                            div { class: "settings-save-row",
-                                button {
-                                    class: "btn btn-primary",
-                                    disabled: !license_activation_available,
-                                    onclick: move |_| {
-                                        if !loopbox::license_activation_available() {
-                                            notice.set(Some(Notice::error(
-                                                "Polar licensing is not configured. Set LOOPBOX_POLAR_ORGANIZATION_ID and LOOPBOX_POLAR_PRO_BENEFIT_ID (optional: LOOPBOX_POLAR_ULTIMATE_BENEFIT_ID) in runtime env or embed them at build time.".to_string(),
-                                            )));
-                                            return;
+                                    match loopbox::activate_license_key(&license_key) {
+                                        Ok(()) => {
+                                            license_key_input.set(String::new());
+                                            notice.set(Some(Notice::success("License activated. Edition: Commercial.".to_string())));
                                         }
-                                        let license_key = license_key_input();
-                                        match loopbox::activate_license_key(&license_key) {
-                                            Ok(()) => {
-                                                license_key_input.set(String::new());
-                                                notice.set(Some(Notice::success(format!(
-                                                    "License activated. Current status: {}.",
-                                                    loopbox::license_status_label()
-                                                ))));
-                                            }
-                                            Err(err) => notice.set(Some(Notice::error(err))),
-                                        }
-                                    },
-                                    "Activate License"
-                                }
+                                        Err(err) => notice.set(Some(Notice::error(err))),
+                                    }
+                                },
+                                "Activate License"
                             }
-                            p { class: "settings-hint",
-                                "License activation validates against Polar customer portal APIs."
-                            }
-                        } else {
-                            p { class: "settings-hint",
-                                "Community builds do not include paid plan activation."
-                            }
+                        }
+                        p { class: "settings-hint",
+                            "Activate a commercial license key to use Loopbox for work. Get one at loopbox.tech/pricing."
                         }
                     }
                 }
@@ -141,7 +96,7 @@ macro_rules! define_loopbox_settings_paid_sections {
                         span { class: "settings-section-icon", "⚑" }
                         div {
                             p { class: "settings-section-title", "Priority Support" }
-                            p { class: "settings-section-desc", "Fast-track support routing for Ultimate customers." }
+                            p { class: "settings-section-desc", "Fast-track support for commercial license holders." }
                         }
                     }
                     div { class: "settings-section-body",
@@ -150,7 +105,7 @@ macro_rules! define_loopbox_settings_paid_sections {
                                 span { class: "settings-toggle-label", "Availability" }
                                 span { class: "settings-toggle-desc",
                                     if priority_support_enabled {
-                                        "available (ultimate)"
+                                        "available"
                                     } else {
                                         "available in Ultimate"
                                     }
