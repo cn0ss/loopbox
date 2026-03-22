@@ -1,0 +1,31 @@
+[package]
+name = "loopbox"
+version = "0.2.0"
+authors = ["Niklas Schmidt <niklas@niklasschmidt.dev>"]
+homepage = "https://loopbox.tech/"
+license = "PolyForm-Noncommercial-1.0.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.7.1", features = ["router"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+webbrowser = "1.0"
+serde_json = "1.0"
+arboard = "3.4"
+tokio = { version = "1.48.0", features = ["time", "rt-multi-thread", "net"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+axum = "0.8.6"
+h2 = "0.4.13"
+bytes = "1.11.1"
+libc = "0.2"
+sha2 = "0.10"
+
+[features]
+default = ["desktop"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]
+
+[build-dependencies]
+cc = "1.2"

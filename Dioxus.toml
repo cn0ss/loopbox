@@ -1,0 +1,32 @@
+[application]
+out_dir = "dist"
+
+[web.app]
+
+# HTML title tag content
+title = "Loopbox"
+
+# include `assets` in web platform
+[web.resource]
+
+# Additional CSS style files
+style = []
+
+# Additional JavaScript files
+script = []
+
+[web.resource.dev]
+
+# Javascript code file
+# serve: [dev-server] only
+script = []
+
+[bundle]
+identifier = "tech.loopbox.app"
+publisher = "loopbox.tech"
+category = "Utility"
+icon = ["assets/loopbox_icon_black.icns"]
+short_description = "Local sandbox control plane for macOS."
+long_description = """
+Loopbox gives each project a dedicated loopback IP and real hostnames so local app environments are easy to run and share.
+"""
