@@ -17,13 +17,6 @@ One IP per project. Stable hostnames. Agent-ready debugging.
 
 Each project gets a dedicated loopback IP and stable `.localhost` hostnames, routed through an internal reverse proxy and managed from a native desktop GUI. Host-based HTTP routes and loopback endpoint listeners for gRPC/TCP are configured from the same sandbox model. Keep URLs consistent across projects, isolate browser storage per hostname, start services, tail logs, inspect traffic, merge `.env` files, and let local AI agents control runtime + debugging workflows via the Agent API. Docker can coexist: bind containers to a sandbox IP to reuse common ports without cross-project conflicts.
 
-## Latest Release: v1.0.5 (2026-03-01)
-
-- Improved runtime stability for service lifecycle tracking, stale PID recovery, and interactive terminal workflows.
-- Fixed command parsing ergonomics by normalizing smart dashes (`—`, `–`, `−`) into standard CLI flags.
-- Fixed noisy log rendering by stripping terminal control sequences before UI display.
-- Hardened runtime signal handling to reject invalid `pid`/`pgid` `0` targets.
-
 ```
 frontend.myapp.localhost  →  127.0.0.2:5173
 backend.myapp.localhost   →  127.0.0.2:8080
@@ -36,13 +29,13 @@ gateway.myapp.localhost   →  127.0.0.2:3000
 
 - **Sandbox Identity** — stable loopback IP + generated hostnames per project for predictable URLs, isolated browser storage, and managed `/etc/hosts` entries
 - **Reverse Proxy Layers** — host-based HTTP routing (`service.project.localhost`) plus loopback endpoint listeners (`grpc_h2c`, `tcp_passthrough`); falls back to `:18080` with pf redirect if `:80` is unavailable
-- **Docker Management (Pro/Ultimate)** — bind containers to a sandbox IP (for example `127.0.0.30`) so multiple projects can reuse the same container ports without collisions
+- **Docker Management** — bind containers to a sandbox IP (for example `127.0.0.30`) so multiple projects can reuse the same container ports without collisions
 - **Multi-Port Services** — each service can define multiple `port + protocol + health` entries (`http1`, `grpc_h2c`, `tcp_passthrough`)
 - **Process Runtime** — start/stop/restart individually or all at once; PID registry survives app restarts
 - **Live Logs** — combined stdout/stderr per service, tailed in-app
-- **HTTP + gRPC Traffic Inspector (Pro/Ultimate)** — full request/response capture with filtering, HAR export, and body preview
-- **Agent API Audit Log (Pro/Ultimate)** — captures each local Agent API request/response (headers, body snapshots, status, latency) in a dedicated UI tab
-- **gRPC Proto Decode (Ultimate)** — optional project proto paths for typed payload decoding via `protoc` with `--decode_raw` fallback
+- **HTTP + gRPC Traffic Inspector** — full request/response capture with filtering, HAR export, and body preview
+- **Agent API Audit Log** — captures each local Agent API request/response (headers, body snapshots, status, latency) in a dedicated UI tab
+- **gRPC Proto Decode** — optional project proto paths for typed payload decoding via `protoc` with `--decode_raw` fallback
 - **Command Discovery** — scans `package.json` recursively; scores suggestions by service name; detects package manager from lockfiles
 - **Env Management** — discovers and merges `.env*` files; injects `LOOPBOX_*` vars (`LOOPBOX_PORT_*`, `LOOPBOX_PORTS_*`, `LOOPBOX_URL_*`) into every spawned process and terminal
 - **Vite Intelligence** — auto-injects `--host`, `--port`, `--strictPort`, and `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`
@@ -56,9 +49,9 @@ gateway.myapp.localhost   →  127.0.0.2:3000
 Loopbox is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
 - **Free for personal use** — hobby projects, research, education, non-commercial organizations
-- **Commercial use requires a paid license** — see [loopbox.tech/pricing](https://loopbox.tech/pricing) for Pro and Ultimate plans
+- **Commercial use requires a paid license** — $14/seat/month or $11/seat/month yearly at [loopbox.tech/pricing](https://loopbox.tech/pricing)
 
-All features are included. Pro and Ultimate license keys unlock additional capabilities like traffic inspection, Agent API audit, gRPC proto decode, and Docker management.
+All features are included in every edition. No feature gating.
 
 ## Agent API
 
@@ -144,7 +137,7 @@ Service protocols: `http1`, `grpc_h2c`, `tcp_passthrough`.
 
 Loopbox still accepts legacy single-port service fields (`port`, `protocol`, `health_path`) and normalizes them into `services.ports` on save/load.
 
-For gRPC payload decoding (Ultimate), configure `grpc_proto_paths` and ensure `protoc` is available in your `PATH`.
+For gRPC payload decoding, configure `grpc_proto_paths` and ensure `protoc` is available in your `PATH`.
 
 ## Tech Stack
 
