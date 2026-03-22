@@ -26,7 +26,22 @@ pub(super) fn MenuBarTrayController(
         };
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        use crate::platform::tray::WindowsMenuBarTray;
+        return rsx! {
+            WindowsMenuBarTray {
+                config,
+                agent_api_info,
+                current_page,
+                selected_project,
+                notice,
+                runtime_tick,
+            }
+        };
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (
             config,
