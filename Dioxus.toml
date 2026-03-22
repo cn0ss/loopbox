@@ -25,8 +25,8 @@ script = []
 identifier = "tech.loopbox.app"
 publisher = "loopbox.tech"
 category = "Utility"
-icon = ["assets/loopbox_icon_black.icns"]
-short_description = "Local sandbox control plane for macOS."
+icon = ["assets/favicon.ico", "assets/loopbox_icon_black.icns"]
+short_description = "Local sandbox control plane."
 long_description = """
 Loopbox gives each project a dedicated loopback IP and real hostnames so local app environments are easy to run and share.
 """
