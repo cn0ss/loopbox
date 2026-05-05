@@ -17,7 +17,11 @@ jobs:
         run: rustup show
 
       - name: Zig
-        run: brew install zig
+        run: |
+          brew install zig@0.15
+          prefix="$(brew --prefix zig@0.15)"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          "$prefix/bin/zig" version
 
       - name: Format
         run: cargo fmt -- --check
