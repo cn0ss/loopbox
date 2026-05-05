@@ -42,7 +42,7 @@ pub fn kill_process_group(pgid: u32, signal: &str) -> Result<(), String> {
         .map_err(|err| {
             format!("Failed to execute kill -{signal} for process group {pgid}: {err}")
         })?;
-    if status.success() || !pid_exists(pgid) {
+    if status.success() || process_group_pids(pgid).is_empty() {
         Ok(())
     } else {
         Err(format!("kill -{signal} failed for process group {pgid}."))

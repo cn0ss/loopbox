@@ -1033,7 +1033,7 @@ fn stop_service_terminates_group_members_when_leader_exits_early() {
     std::fs::write(
         &script_path,
         format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\nnohup sleep 30 >/dev/null 2>&1 &\necho $! > '{}'\n",
+            "#!/usr/bin/env bash\nset -euo pipefail\ntrap '' HUP\nsleep 30 >/dev/null 2>&1 &\necho $! > '{}'\n",
             child_pid_path.to_string_lossy()
         ),
     )

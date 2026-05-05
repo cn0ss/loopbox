@@ -16,7 +16,7 @@ pub(super) fn terminate_pid_if_alive(pid: u32, process_group_leader: bool) -> Re
         }
 
         let mut term_error = platform::kill_process_group(pid, "TERM").err();
-        if let Err(err) = platform::kill_process(pid, "TERM") {
+        if let Some(err) = signal_pid_set(&observed_group_members, "TERM") {
             if term_error.is_none() {
                 term_error = Some(err);
             }
@@ -29,7 +29,7 @@ pub(super) fn terminate_pid_if_alive(pid: u32, process_group_leader: bool) -> Re
         }
 
         let mut kill_error = platform::kill_process_group(pid, "KILL").err();
-        if let Err(err) = platform::kill_process(pid, "KILL") {
+        if let Some(err) = signal_pid_set(&observed_group_members, "KILL") {
             if kill_error.is_none() {
                 kill_error = Some(err);
             }
