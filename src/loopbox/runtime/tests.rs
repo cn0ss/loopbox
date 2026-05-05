@@ -715,6 +715,7 @@ fn apply_bind_hints_adds_vite_flags_for_nested_root_script_chain() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
 #[test]
 fn start_and_stop_portless_service_changes_status() {
     let (config, project, service) = runtime_config_with_port("sleep 3", None);
@@ -735,6 +736,7 @@ fn start_and_stop_portless_service_changes_status() {
     assert_eq!(stopped.state, ServiceRuntimeState::Stopped);
 }
 
+#[cfg(unix)]
 #[test]
 fn send_service_input_writes_to_running_process_stdin() {
     let (config, project, service) = runtime_config_with_port(
@@ -754,6 +756,7 @@ fn send_service_input_writes_to_running_process_stdin() {
     let _ = stop_service(&project, &service);
 }
 
+#[cfg(unix)]
 #[test]
 fn service_input_attached_stays_true_after_runtime_tracking_is_lost() {
     let (config, project, service) = runtime_config_with_port("sleep 5", None);
@@ -768,6 +771,7 @@ fn service_input_attached_stays_true_after_runtime_tracking_is_lost() {
     let _ = stop_service(&project, &service);
 }
 
+#[cfg(unix)]
 #[test]
 fn send_service_input_works_after_runtime_tracking_is_lost() {
     let (config, project, service) = runtime_config_with_port(
@@ -791,6 +795,7 @@ fn send_service_input_works_after_runtime_tracking_is_lost() {
     let _ = stop_service(&project, &service);
 }
 
+#[cfg(unix)]
 #[test]
 fn start_and_stop_service_changes_status() {
     let (config, project, service) = runtime_config("sleep 3");
@@ -813,6 +818,7 @@ fn start_and_stop_service_changes_status() {
     assert_eq!(stopped.state, ServiceRuntimeState::Stopped);
 }
 
+#[cfg(unix)]
 #[test]
 fn service_without_health_target_skips_active_health_checks() {
     let (config, project, service) = runtime_config("sleep 4");
@@ -826,6 +832,7 @@ fn service_without_health_target_skips_active_health_checks() {
     let _ = stop_service(&project, &service);
 }
 
+#[cfg(unix)]
 #[test]
 fn stop_project_all_continues_after_service_stop_error() {
     let (config, project, first_service, second_service) =
@@ -1084,6 +1091,7 @@ fn stop_service_terminates_group_members_when_leader_exits_early() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn service_logs_capture_stdout_and_stderr() {
     let (config, project, service) = runtime_config("echo hello-log; echo error-log 1>&2; sleep 1");
@@ -1210,6 +1218,7 @@ fn service_logs_persist_offset_after_new_lines() {
     let _ = clear_service_logs(&project, &service);
 }
 
+#[cfg(unix)]
 #[test]
 fn service_log_attached_tracks_running_state() {
     let (config, project, service) = runtime_config("sleep 3");
@@ -1220,6 +1229,7 @@ fn service_log_attached_tracks_running_state() {
     assert!(!service_log_attached(&project, &service).expect("attached false"));
 }
 
+#[cfg(unix)]
 #[test]
 fn detached_service_logs_can_be_reattached_from_file() {
     let (config, project, service) = runtime_config("echo reattach-log; sleep 3");
@@ -1233,6 +1243,7 @@ fn detached_service_logs_can_be_reattached_from_file() {
     let _ = stop_service(&project, &service);
 }
 
+#[cfg(unix)]
 #[test]
 fn status_and_stop_work_after_runtime_store_is_dropped() {
     let (config, project, service) = runtime_config("sleep 4");

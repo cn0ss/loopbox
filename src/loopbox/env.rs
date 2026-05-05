@@ -326,6 +326,10 @@ mod tests {
         ))
     }
 
+    fn path_ends_with(path: &str, suffix: &str) -> bool {
+        path.replace('\\', "/").ends_with(suffix)
+    }
+
     #[test]
     fn discover_env_files_finds_nested_env_files() {
         let root = temp_dir();
@@ -337,11 +341,11 @@ mod tests {
 
         let found =
             discover_env_files(root.to_string_lossy().as_ref()).expect("discover env files");
-        assert!(found.iter().any(|path| path.ends_with("/.env")));
-        assert!(found.iter().any(|path| path.ends_with("/.env.local")));
+        assert!(found.iter().any(|path| path_ends_with(path, "/.env")));
+        assert!(found.iter().any(|path| path_ends_with(path, "/.env.local")));
         assert!(!found
             .iter()
-            .any(|path| path.ends_with("/.env.local.example")));
+            .any(|path| path_ends_with(path, "/.env.local.example")));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -539,7 +543,7 @@ mod tests {
         assert!(merged
             .sources
             .get("SHARED")
-            .is_some_and(|source| source.ends_with("/.env.local")));
+            .is_some_and(|source| path_ends_with(source, "/.env.local")));
         assert!(!merged.overrides.is_empty());
 
         let _ = fs::remove_dir_all(&root);

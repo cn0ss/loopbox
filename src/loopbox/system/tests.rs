@@ -2,6 +2,7 @@ use super::{apply_script, managed_hosts_block, proxy_redirect_required, revert_s
 use crate::loopbox::{GlobalConfig, LoopboxConfig, ProjectConfig, ServiceConfig};
 use std::collections::BTreeMap;
 
+#[cfg(target_os = "macos")]
 #[test]
 fn proxy_anchor_generation_contains_expected_rule() {
     let config = LoopboxConfig {
@@ -119,6 +120,7 @@ fn managed_hosts_block_points_service_hosts_to_project_ip() {
     assert!(!hosts.contains("127.0.0.1 frontend.app.niklasschmidt.dev"));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_apply_script_installs_boot_time_loopback_alias_restorer() {
     let config = LoopboxConfig {
@@ -181,6 +183,7 @@ fn macos_apply_script_installs_boot_time_loopback_alias_restorer() {
     assert!(script.contains("/sbin/ifconfig lo0 alias '127.0.0.42' up"));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_revert_script_removes_boot_time_loopback_alias_restorer() {
     let config = LoopboxConfig {

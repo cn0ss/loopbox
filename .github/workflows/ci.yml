@@ -16,6 +16,9 @@ jobs:
       - name: Rust toolchain
         run: rustup show
 
+      - name: Zig
+        run: brew install zig
+
       - name: Format
         run: cargo fmt -- --check
 
