@@ -13,6 +13,7 @@ pub fn apply_networking_script(
     fallback_port: u16,
 ) -> String {
     let mut script = String::new();
+    script.push_str("#!/usr/bin/env bash\nset -euo pipefail\n\n");
     script.push_str("# 1) Ensure loopback aliases exist\n");
 
     if projects.is_empty() {
@@ -83,6 +84,7 @@ pub fn revert_networking_script(
     projects: &std::collections::BTreeMap<String, crate::loopbox::ProjectConfig>,
 ) -> String {
     let mut script = String::new();
+    script.push_str("#!/usr/bin/env bash\nset -euo pipefail\n\n");
     script.push_str("# 1) Remove loopback aliases from current config and legacy hosts entries\n");
     for ip in projects.values().map(|project| project.ip.trim()) {
         script.push_str(&format!(
@@ -127,9 +129,7 @@ pub fn revert_networking_script(
 }
 
 pub fn loopback_alias_present(ip: &str) -> bool {
-    let output = Command::new("/sbin/ifconfig")
-        .arg("lo0")
-        .output();
+    let output = Command::new("/sbin/ifconfig").arg("lo0").output();
     let Ok(output) = output else {
         return false;
     };
@@ -173,6 +173,14 @@ pub fn proxy_redirect_configured_on_system(
 
 pub fn dns_flush_command() -> &'static str {
     "sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder"
+}
+
+pub fn loopback_interface_label() -> &'static str {
+    "lo0"
+}
+
+pub fn proxy_redirect_label() -> &'static str {
+    "pf redirect"
 }
 
 fn redirect_target_ips(

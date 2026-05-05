@@ -168,7 +168,7 @@ pub enum ProxyEndpointProtocol {
     TcpPassthrough,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
     #[serde(default)]
     pub dir: String,
@@ -186,21 +186,6 @@ pub struct ProjectConfig {
     pub grpc_proto_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proxy_endpoints: Vec<ProxyEndpointConfig>,
-}
-
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self {
-            dir: String::new(),
-            ip: String::new(),
-            services: Vec::new(),
-            default_open_service: None,
-            proxy_traffic_capture_enabled: None,
-            proxy_traffic_capture_mode: None,
-            grpc_proto_paths: Vec::new(),
-            proxy_endpoints: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -609,10 +594,6 @@ pub fn reverse_proxy_url_for_host(host: &str) -> Option<String> {
     }
 }
 
-pub fn reverse_proxy_fallback_port() -> u16 {
-    PROXY_FALLBACK_PORT
-}
-
 fn ensure_proxy_traffic_writer_running(config: &LoopboxConfig) -> Result<(), String> {
     let queue_size =
         sanitize_proxy_writer_queue_size(config.global.proxy_traffic.writer_queue_size);
@@ -879,7 +860,9 @@ fn render_grpc_preview(
 }
 
 #[cfg(test)]
-fn split_grpc_frames(bytes: &[u8]) -> (Vec<(super::features::GrpcFrameMetaForTest, Vec<u8>)>, bool) {
+fn split_grpc_frames(
+    bytes: &[u8],
+) -> (Vec<(super::features::GrpcFrameMetaForTest, Vec<u8>)>, bool) {
     super::features::split_grpc_frames_for_test(bytes)
 }
 

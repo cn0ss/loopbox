@@ -39,13 +39,6 @@ fn main() {
         eprintln!("Loopbox updater startup warning: {err}");
     }
 
-    if let Err(err) = loopbox::init_license_state_at_startup() {
-        eprintln!("Loopbox license startup warning: {err}");
-    }
-    if let Err(err) = loopbox::start_periodic_license_revalidation() {
-        eprintln!("Loopbox license background revalidation warning: {err}");
-    }
-
     let config = match loopbox::load_config() {
         Ok(config) => config,
         Err(err) => {

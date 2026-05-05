@@ -1,8 +1,6 @@
 pub(super) fn is_sensitive_header_name(name: &str, redacted_header_names: &[String]) -> bool {
     let lower = name.to_ascii_lowercase();
-    redacted_header_names
-        .iter()
-        .any(|sensitive| lower == *sensitive)
+    redacted_header_names.contains(&lower)
 }
 
 pub(super) fn is_sensitive_query_key(key: &str, redacted_query_keys: &[String]) -> bool {

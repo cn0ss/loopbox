@@ -122,21 +122,11 @@ impl SetupStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct ProjectEditForm {
     pub(super) dir: String,
     pub(super) ip: String,
     pub(super) services: Vec<ServiceEntry>,
-}
-
-impl Default for ProjectEditForm {
-    fn default() -> Self {
-        Self {
-            dir: String::new(),
-            ip: String::new(),
-            services: Vec::new(),
-        }
-    }
 }
 
 impl ProjectEditForm {

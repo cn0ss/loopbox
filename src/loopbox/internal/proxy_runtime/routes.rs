@@ -362,7 +362,7 @@ pub(super) fn insert_proxy_endpoint_route(
     let route_authority = route.authority.clone().unwrap_or_default();
     let route_authority = route_authority.trim().to_lowercase();
 
-    let entry = routes.entry(key).or_insert_with(Vec::new);
+    let entry = routes.entry(key).or_default();
     if entry
         .iter()
         .any(|existing| existing.protocol != route_protocol)

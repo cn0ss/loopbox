@@ -562,6 +562,7 @@ pub(super) fn handle_proxy_connection(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forward_http_exchange(
     client: &mut TcpStream,
     upstream: &mut TcpStream,
@@ -612,14 +613,8 @@ fn forward_http_exchange(
     // aborted request and close without sending a response.
     let request_body = finalize_optional_preview(request_preview);
 
-    let response_preamble = match read_http_preamble_with_limit(
-        upstream,
-        MAX_RESPONSE_HEADER_BYTES,
-        "upstream response",
-    ) {
-        Ok(preamble) => preamble,
-        Err(err) => return Err(err),
-    };
+    let response_preamble =
+        read_http_preamble_with_limit(upstream, MAX_RESPONSE_HEADER_BYTES, "upstream response")?;
     let response_header_end =
         header_end_index(&response_preamble).unwrap_or(response_preamble.len());
     let response_headers_only = &response_preamble[..response_header_end];

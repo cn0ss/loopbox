@@ -36,8 +36,7 @@ pub(super) fn service_protocol_value(protocol: &ProxyEndpointProtocol) -> &'stat
 
 pub(super) fn normalize_service_command_input(raw: &str) -> String {
     raw.replace('\u{2014}', "--")
-        .replace('\u{2013}', "-")
-        .replace('\u{2212}', "-")
+        .replace(['\u{2013}', '\u{2212}'], "-")
 }
 
 pub(super) fn parse_service_protocol(raw: &str) -> Option<ProxyEndpointProtocol> {
@@ -159,7 +158,7 @@ pub(super) fn optional_trimmed_endpoint_value(raw: &str) -> Option<String> {
 
 pub(super) fn normalize_grpc_proto_paths_for_form(raw: &str) -> Vec<String> {
     let mut seen = HashSet::new();
-    raw.split(|ch: char| ch == '\n' || ch == ',' || ch == ';')
+    raw.split(['\n', ',', ';'])
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())

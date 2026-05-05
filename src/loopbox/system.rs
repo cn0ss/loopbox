@@ -22,14 +22,11 @@ pub fn managed_hosts_block(config: &LoopboxConfig) -> String {
 }
 
 pub fn apply_script(config: &LoopboxConfig) -> String {
-    let mut script = String::new();
-    script.push_str("#!/usr/bin/env bash\nset -euo pipefail\n\n");
-    script.push_str(&platform::networking::apply_networking_script(
+    platform::networking::apply_networking_script(
         &config.projects,
         &managed_hosts_block(config),
         reverse_proxy_fallback_port(),
-    ));
-    script
+    )
 }
 
 pub fn apply_system_setup(config: &LoopboxConfig) -> Result<String, String> {
@@ -38,12 +35,7 @@ pub fn apply_system_setup(config: &LoopboxConfig) -> Result<String, String> {
 }
 
 pub fn revert_script(config: &LoopboxConfig) -> String {
-    let mut script = String::new();
-    script.push_str("#!/usr/bin/env bash\nset -euo pipefail\n\n");
-    script.push_str(&platform::networking::revert_networking_script(
-        &config.projects,
-    ));
-    script
+    platform::networking::revert_networking_script(&config.projects)
 }
 
 pub fn revert_system_setup(config: &LoopboxConfig) -> Result<String, String> {
@@ -67,15 +59,9 @@ pub fn save_hosts_file(content: &str) -> Result<String, String> {
         .map_err(|err| format!("Failed to write temporary file: {err}"))?;
 
     let content_path_str = content_path.to_string_lossy().to_string();
-    let script = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\n/bin/cp \"{}\" \"{}\"\nrm -f \"{}\"\n",
-        content_path_str, hosts_path, content_path_str
-    );
+    let script = platform::hosts::replace_hosts_file_script(&content_path_str);
 
-    let result = run_setup_script(
-        script,
-        format!("Saved {} successfully.", hosts_path),
-    );
+    let result = run_setup_script(script, format!("Saved {} successfully.", hosts_path));
     let _ = fs::remove_file(&content_path);
     result
 }
@@ -193,12 +179,12 @@ fn apply_success_message(config: &LoopboxConfig) -> String {
     let managed_host_count = managed_service_hosts(config).len();
 
     format!(
-        "Setup complete. Ensured {alias_count} loopback alias(es), wrote {managed_host_count} managed hostname mapping(s), configured redirect rules, and refreshed DNS cache."
+        "Setup complete. Ensured {alias_count} loopback address assignment(s), wrote {managed_host_count} managed hostname mapping(s), configured redirect rules, and refreshed DNS cache."
     )
 }
 
 fn revert_success_message(_config: &LoopboxConfig) -> String {
-    "Revert complete. Removed loopbox-managed aliases, hosts block, redirect rules, and refreshed DNS cache."
+    "Revert complete. Removed loopbox-managed loopback addresses, hosts block, redirect rules, and refreshed DNS cache."
         .to_string()
 }
 

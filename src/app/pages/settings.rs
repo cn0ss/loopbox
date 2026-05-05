@@ -5,9 +5,10 @@ use dioxus::prelude::*;
 
 mod helpers;
 use helpers::*;
-mod paid_sections;
-use paid_sections::*;
+mod feature_sections;
+use feature_sections::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn render_settings_page(
     page: Page,
     ip_base: String,
@@ -469,7 +470,7 @@ pub(in crate::app) fn render_settings_page(
                     }
                 }
 
-                EeSettingsSections {
+                SettingsFeatureSections {
                     proxy_capture_default_input,
                     proxy_capture_mode_input,
                     proxy_capture_text_only_input,

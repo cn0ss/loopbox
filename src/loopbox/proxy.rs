@@ -29,7 +29,7 @@ fn default_proxy_event_protocol() -> String {
     "http1".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReverseProxyStatus {
     pub running: bool,
     pub bind_port: u16,
@@ -37,19 +37,6 @@ pub struct ReverseProxyStatus {
     pub note: Option<String>,
     pub listener_count: usize,
     pub endpoint_listener_count: usize,
-}
-
-impl Default for ReverseProxyStatus {
-    fn default() -> Self {
-        Self {
-            running: false,
-            bind_port: 0,
-            using_fallback_port: false,
-            note: None,
-            listener_count: 0,
-            endpoint_listener_count: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,9 +145,7 @@ impl Default for ReverseProxyState {
 static REVERSE_PROXY_STATE: OnceLock<Mutex<ReverseProxyState>> = OnceLock::new();
 static PROXY_ASYNC_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-fn map_bridge_status(
-    status: super::proxy_bridge::ReverseProxyStatus,
-) -> ReverseProxyStatus {
+fn map_bridge_status(status: super::proxy_bridge::ReverseProxyStatus) -> ReverseProxyStatus {
     ReverseProxyStatus {
         running: status.running,
         bind_port: status.bind_port,
@@ -291,14 +276,6 @@ pub fn project_proxy_traffic_capture_mode(
     project_name: &str,
 ) -> ProxyCaptureMode {
     super::features::project_proxy_traffic_capture_mode(config, project_name)
-}
-
-pub fn proxy_traffic_events_for_project(
-    project_name: &str,
-    limit: usize,
-) -> Result<Vec<ProxyTrafficEvent>, String> {
-    let effective_limit = limit.clamp(1, MAX_PROXY_TRAFFIC_MAX_EVENTS);
-    super::features::proxy_traffic_events_for_project(project_name, effective_limit)
 }
 
 pub fn proxy_traffic_events_for_project_with_persisted(

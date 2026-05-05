@@ -45,9 +45,7 @@ pub(crate) fn App() -> Element {
         let request = pending_auto_apply();
         let cfg = config();
         async move {
-            let Some(saved_message) = request else {
-                return None;
-            };
+            let saved_message = request?;
 
             let apply_result =
                 tokio::task::spawn_blocking(move || loopbox::apply_system_setup(&cfg))

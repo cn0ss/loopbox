@@ -1,11 +1,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct GrpcFrameMetaForTest {
+pub(crate) struct GrpcFrameMetaForTest {
     pub compressed: bool,
     pub declared_len: usize,
     pub complete: bool,
 }
 
-pub(super) fn split_grpc_frames_for_test(
+pub(crate) fn split_grpc_frames_for_test(
     bytes: &[u8],
 ) -> (Vec<(GrpcFrameMetaForTest, Vec<u8>)>, bool) {
     let (frames, trailing) = super::grpc::split_grpc_frames(bytes);
@@ -25,19 +25,19 @@ pub(super) fn split_grpc_frames_for_test(
     (converted, trailing)
 }
 
-pub(super) fn beautify_protoc_text_output_for_test(raw: &str) -> String {
+pub(crate) fn beautify_protoc_text_output_for_test(raw: &str) -> String {
     super::grpc::beautify_protoc_text_output(raw)
 }
 
-pub(super) fn parse_day_key_for_test(day_key: &str) -> Option<i64> {
+pub(crate) fn parse_day_key_for_test(day_key: &str) -> Option<i64> {
     parse_day_key_test_impl(day_key)
 }
 
-pub(super) fn parse_day_from_traffic_filename_for_test(name: &str) -> Option<i64> {
+pub(crate) fn parse_day_from_traffic_filename_for_test(name: &str) -> Option<i64> {
     parse_day_from_traffic_filename_test_impl(name)
 }
 
-pub(super) fn proxy_event_to_har_entry_for_test(
+pub(crate) fn proxy_event_to_har_entry_for_test(
     event: &super::super::ProxyTrafficEvent,
 ) -> serde_json::Value {
     proxy_event_to_har_entry_test_impl(event)

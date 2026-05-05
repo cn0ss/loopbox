@@ -1,9 +1,11 @@
-use std::process::Command;
 use std::path::Path;
-use std::sync::Arc;
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
-pub fn supports_process_groups() -> bool { false }
+pub fn supports_process_groups() -> bool {
+    false
+}
 
 pub fn configure_process_group(_command: &mut Command) {
     // No-op on Windows — no process groups
@@ -116,7 +118,13 @@ pub fn listening_pid_for_port(bind_ip: &str, port: u16) -> Option<u32> {
 pub fn process_command_for_pid(pid: u32) -> Option<String> {
     // Use: wmic process where ProcessId={pid} get Name
     let output = Command::new("wmic")
-        .args(["process", "where", &format!("ProcessId={pid}"), "get", "Name"])
+        .args([
+            "process",
+            "where",
+            &format!("ProcessId={pid}"),
+            "get",
+            "Name",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {

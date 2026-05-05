@@ -706,7 +706,7 @@ pub(super) fn NewSandboxWizard(
                                                 "+ Port"
                                             }
                                         }
-                                        WizardEeServiceRuntimeFields {
+                                        WizardServiceRuntimeFields {
                                             service_index: i,
                                             entry: entry.clone(),
                                             add_form,
@@ -1580,11 +1580,9 @@ pub(super) fn sanitize_identifier(raw: &str) -> String {
             continue;
         }
 
-        if matches!(ch, '-' | '_' | '.' | ' ') {
-            if !normalized.is_empty() && !last_was_separator {
-                normalized.push('-');
-                last_was_separator = true;
-            }
+        if matches!(ch, '-' | '_' | '.' | ' ') && !normalized.is_empty() && !last_was_separator {
+            normalized.push('-');
+            last_was_separator = true;
         }
     }
     normalized.trim_matches('-').trim_matches('_').to_string()

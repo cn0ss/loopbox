@@ -367,7 +367,7 @@ pub(super) fn looks_like_text_bytes(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return true;
     }
-    if bytes.iter().any(|b| *b == 0) {
+    if bytes.contains(&0) {
         return false;
     }
     for b in bytes {

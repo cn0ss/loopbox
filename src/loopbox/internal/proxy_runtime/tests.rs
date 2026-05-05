@@ -1,16 +1,37 @@
 use super::{
     build_proxy_endpoint_routes, build_proxy_routes, has_header_terminator,
     parse_and_redact_headers, parse_day_from_traffic_filename, parse_day_key, parse_request_host,
-    parse_request_line, parse_response_status, project_proxy_traffic_capture_mode,
-    project_proxy_traffic_enabled, proxy_event_to_har_entry, redact_path_query,
+    parse_request_line, parse_response_status, proxy_event_to_har_entry, redact_path_query,
     sanitize_proxy_max_storage_mb, sanitize_proxy_retention_days, sanitize_proxy_writer_queue_size,
-    select_grpc_route_for_authority, strip_host_port, PreviewCapture,
-};
-use crate::loopbox::{
-    GlobalConfig, LoopboxConfig, ProjectConfig, ProxyCaptureMode, ProxyEndpointConfig,
-    ProxyEndpointProtocol, ServiceConfig,
+    select_grpc_route_for_authority, strip_host_port, GlobalConfig, LoopboxConfig, PreviewCapture,
+    ProjectConfig, ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol, ProxyTrafficEvent,
+    ProxyTrafficHeader, ProxyTrafficSettings, ServiceConfig, ServiceRuntimeKind,
 };
 use std::collections::BTreeMap;
+
+fn project_proxy_traffic_enabled(config: &LoopboxConfig, project_name: &str) -> bool {
+    config
+        .projects
+        .get(project_name)
+        .map(|project| {
+            project
+                .proxy_traffic_capture_enabled
+                .unwrap_or(config.global.proxy_traffic.capture_enabled_by_default)
+        })
+        .unwrap_or(false)
+}
+
+fn project_proxy_traffic_capture_mode(
+    config: &LoopboxConfig,
+    project_name: &str,
+) -> ProxyCaptureMode {
+    let selected = config
+        .projects
+        .get(project_name)
+        .and_then(|project| project.proxy_traffic_capture_mode.clone())
+        .unwrap_or_else(|| config.global.proxy_traffic.capture_mode_default.clone());
+    super::enforce_traffic_capture_mode(selected)
+}
 
 #[test]
 fn host_parser_extracts_host_without_port() {
@@ -137,8 +158,7 @@ fn grpc_preview_renders_unframed_payload_text() {
     frame.extend_from_slice(payload);
 
     let rendered = super::render_grpc_preview(&frame, &[], None, None, false);
-    let rendered =
-        rendered.expect("gRPC preview should render when traffic capture is enabled");
+    let rendered = rendered.expect("gRPC preview should render when traffic capture is enabled");
     assert!(rendered.contains(r#"{"ok":true}"#));
 }
 
@@ -189,7 +209,7 @@ fn route_builder_skips_portless_services() {
                 services: vec![
                     ServiceConfig {
                         name: "frontend".to_string(),
-                        runtime: crate::loopbox::ServiceRuntimeKind::Process,
+                        runtime: ServiceRuntimeKind::Process,
                         container: None,
                         ports: vec![],
                         port: Some(3000),
@@ -203,7 +223,7 @@ fn route_builder_skips_portless_services() {
                     },
                     ServiceConfig {
                         name: "worker".to_string(),
-                        runtime: crate::loopbox::ServiceRuntimeKind::Process,
+                        runtime: ServiceRuntimeKind::Process,
                         container: None,
                         ports: vec![],
                         port: None,
@@ -249,7 +269,7 @@ fn route_builder_skips_non_http_service_protocols() {
                 ip: "127.0.0.30".to_string(),
                 services: vec![ServiceConfig {
                     name: "gateway".to_string(),
-                    runtime: crate::loopbox::ServiceRuntimeKind::Process,
+                    runtime: ServiceRuntimeKind::Process,
                     container: None,
                     ports: vec![],
                     port: Some(50051),
@@ -285,7 +305,7 @@ fn endpoint_route_builder_includes_project_proxy_endpoints() {
                 ip: "127.0.0.30".to_string(),
                 services: vec![ServiceConfig {
                     name: "gateway".to_string(),
-                    runtime: crate::loopbox::ServiceRuntimeKind::Process,
+                    runtime: ServiceRuntimeKind::Process,
                     container: None,
                     ports: vec![],
                     port: Some(50052),
@@ -345,7 +365,7 @@ fn endpoint_route_builder_auto_includes_grpc_service_listener() {
                 ip: "127.0.0.30".to_string(),
                 services: vec![ServiceConfig {
                     name: "gateway".to_string(),
-                    runtime: crate::loopbox::ServiceRuntimeKind::Process,
+                    runtime: ServiceRuntimeKind::Process,
                     container: None,
                     ports: vec![],
                     port: Some(50051),
@@ -484,9 +504,9 @@ fn grpc_authority_route_selection_prefers_matching_route() {
 fn project_capture_setting_falls_back_to_global_default() {
     let config = LoopboxConfig {
         global: GlobalConfig {
-            proxy_traffic: crate::loopbox::ProxyTrafficSettings {
+            proxy_traffic: ProxyTrafficSettings {
                 capture_enabled_by_default: true,
-                ..crate::loopbox::ProxyTrafficSettings::default()
+                ..ProxyTrafficSettings::default()
             },
             ..GlobalConfig::default()
         },
@@ -511,9 +531,9 @@ fn project_capture_setting_falls_back_to_global_default() {
 fn project_capture_mode_falls_back_to_global_default() {
     let config = LoopboxConfig {
         global: GlobalConfig {
-            proxy_traffic: crate::loopbox::ProxyTrafficSettings {
+            proxy_traffic: ProxyTrafficSettings {
                 capture_mode_default: ProxyCaptureMode::Headers,
-                ..crate::loopbox::ProxyTrafficSettings::default()
+                ..ProxyTrafficSettings::default()
             },
             ..GlobalConfig::default()
         },
@@ -572,7 +592,7 @@ fn day_parsers_validate_values() {
 
 #[test]
 fn har_entry_uses_proxy_event_fields() {
-    let event = crate::loopbox::ProxyTrafficEvent {
+    let event = ProxyTrafficEvent {
         id: 1,
         started_at_utc: "2026-02-21 10:00:00 UTC".to_string(),
         project_name: "demo".to_string(),
@@ -594,11 +614,11 @@ fn har_entry_uses_proxy_event_fields() {
         request_body_bytes: 0,
         response_header_bytes: 64,
         response_body_bytes: 192,
-        request_headers: vec![crate::loopbox::ProxyTrafficHeader {
+        request_headers: vec![ProxyTrafficHeader {
             name: "accept".to_string(),
             value: "application/json".to_string(),
         }],
-        response_headers: vec![crate::loopbox::ProxyTrafficHeader {
+        response_headers: vec![ProxyTrafficHeader {
             name: "content-type".to_string(),
             value: "application/json".to_string(),
         }],

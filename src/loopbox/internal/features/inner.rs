@@ -1,4 +1,4 @@
-// PRIVATE EE OVERLAY - do not publish
+// Integrated feature implementation shared by the public app.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -19,7 +19,7 @@ mod test_support;
 pub use grpc::render_grpc_preview;
 
 #[cfg(test)]
-pub use test_support::{
+pub(crate) use test_support::{
     beautify_protoc_text_output_for_test, parse_day_from_traffic_filename_for_test,
     parse_day_key_for_test, proxy_event_to_har_entry_for_test, split_grpc_frames_for_test,
     GrpcFrameMetaForTest,
@@ -33,13 +33,6 @@ pub fn project_proxy_traffic_capture_mode(
     project_name: &str,
 ) -> super::ProxyCaptureMode {
     traffic::project_proxy_traffic_capture_mode(config, project_name)
-}
-
-pub fn proxy_traffic_events_for_project(
-    project_name: &str,
-    limit: usize,
-) -> Result<Vec<super::ProxyTrafficEvent>, String> {
-    traffic::proxy_traffic_events_for_project(project_name, limit)
 }
 
 pub fn proxy_traffic_events_for_project_with_persisted(
@@ -86,10 +79,6 @@ pub fn clear_agent_api_audit_events() -> Result<usize, String> {
     agent_api_audit::clear_agent_api_audit_events()
 }
 
-pub fn push_agent_api_audit_event(event: super::AgentApiAuditEvent, max_events: usize) {
-    agent_api_audit::push_agent_api_audit_event(event, max_events);
-}
-
 pub async fn run_agent_api_audit_middleware(
     auth_enabled: bool,
     request: axum::extract::Request,
@@ -110,7 +99,7 @@ pub fn doctor_service_extra_issues(
         && service
             .container
             .as_ref()
-            .map_or(true, |cfg| cfg.image.trim().is_empty())
+            .is_none_or(|cfg| cfg.image.trim().is_empty())
     {
         issues.push(super::DoctorIssue {
             level: super::DoctorLevel::Error,
@@ -206,6 +195,10 @@ mod traffic {
 
     static PROXY_TRAFFIC_STORE: OnceLock<Mutex<ProxyTrafficStore>> = OnceLock::new();
     static PROXY_TRAFFIC_WRITER_STATE: OnceLock<Mutex<ProxyTrafficWriterState>> = OnceLock::new();
+    #[cfg(test)]
+    static PROXY_TRAFFIC_TEST_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    #[cfg(test)]
+    static PROXY_TRAFFIC_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn proxy_traffic_store() -> &'static Mutex<ProxyTrafficStore> {
         PROXY_TRAFFIC_STORE.get_or_init(|| Mutex::new(ProxyTrafficStore::default()))
@@ -311,14 +304,18 @@ mod traffic {
     pub(super) fn clear_proxy_traffic_events_for_project(
         project_name: &str,
     ) -> Result<usize, String> {
-        let mut store = proxy_traffic_store()
-            .lock()
-            .map_err(|_| "Proxy traffic store lock poisoned.".to_string())?;
-        let before = store.events.len();
-        store
-            .events
-            .retain(|event| event.project_name != project_name);
-        Ok(before.saturating_sub(store.events.len()))
+        let in_memory_removed = {
+            let mut store = proxy_traffic_store()
+                .lock()
+                .map_err(|_| "Proxy traffic store lock poisoned.".to_string())?;
+            let before = store.events.len();
+            store
+                .events
+                .retain(|event| event.project_name != project_name);
+            before.saturating_sub(store.events.len())
+        };
+        let disk_removed = clear_proxy_traffic_disk_for_project(project_name)?;
+        Ok(in_memory_removed.saturating_add(disk_removed))
     }
 
     pub(super) fn proxy_traffic_disk_stats() -> ProxyTrafficDiskStats {
@@ -340,24 +337,8 @@ mod traffic {
         service_filter: Option<&str>,
         output_path: &Path,
     ) -> Result<usize, String> {
-        let events = {
-            let store = proxy_traffic_store()
-                .lock()
-                .map_err(|_| "Proxy traffic store lock poisoned.".to_string())?;
-            let mut selected = Vec::new();
-            for event in store.events.iter() {
-                if event.project_name != project_name {
-                    continue;
-                }
-                if let Some(service_name) = service_filter {
-                    if event.service_name != service_name {
-                        continue;
-                    }
-                }
-                selected.push(event.clone());
-            }
-            selected
-        };
+        let events =
+            proxy_traffic_events_for_project_with_persisted(project_name, service_filter, 100_000)?;
 
         let entries = events
             .iter()
@@ -429,19 +410,6 @@ mod traffic {
         }
     }
 
-    fn purge_proxy_traffic_storage_dir() {
-        let storage_dir = proxy_traffic_dir();
-        if !storage_dir.exists() {
-            return;
-        }
-        if let Err(err) = fs::remove_dir_all(&storage_dir) {
-            eprintln!(
-                "Loopbox failed to purge proxy traffic storage {}: {err}",
-                storage_dir.display()
-            );
-        }
-    }
-
     fn enqueue_proxy_traffic_event_for_disk(event: &ProxyTrafficEvent) {
         let Ok(mut state) = proxy_traffic_writer_state().lock() else {
             return;
@@ -503,12 +471,31 @@ mod traffic {
     }
 
     fn proxy_traffic_dir() -> PathBuf {
+        #[cfg(test)]
+        if let Some(path) = proxy_traffic_test_dir()
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+        {
+            return path;
+        }
+
         let config_file = config_path();
         let base_dir = config_file
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(".loopbox"));
         base_dir.join("traffic")
+    }
+
+    #[cfg(test)]
+    fn proxy_traffic_test_dir() -> &'static Mutex<Option<PathBuf>> {
+        PROXY_TRAFFIC_TEST_DIR.get_or_init(|| Mutex::new(None))
+    }
+
+    #[cfg(test)]
+    fn proxy_traffic_test_lock() -> &'static Mutex<()> {
+        PROXY_TRAFFIC_TEST_LOCK.get_or_init(|| Mutex::new(()))
     }
 
     fn load_proxy_traffic_events_from_disk(
@@ -603,6 +590,64 @@ mod traffic {
             event.path,
             event.status_code.unwrap_or(0)
         )
+    }
+
+    fn clear_proxy_traffic_disk_for_project(project_name: &str) -> Result<usize, String> {
+        let storage_dir = proxy_traffic_dir();
+        if !storage_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut removed = 0_usize;
+        let entries = fs::read_dir(&storage_dir).map_err(|err| {
+            format!(
+                "Failed to list proxy traffic dir {}: {err}",
+                storage_dir.display()
+            )
+        })?;
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if parse_day_from_traffic_filename(name).is_none() {
+                continue;
+            }
+
+            let file = File::open(&path)
+                .map_err(|err| format!("Failed to open {}: {err}", path.display()))?;
+            let mut kept = Vec::new();
+            for line in BufReader::new(file).lines() {
+                let Ok(line) = line else {
+                    continue;
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<ProxyTrafficEvent>(&line) {
+                    Ok(event) if event.project_name == project_name => {
+                        removed = removed.saturating_add(1);
+                    }
+                    Ok(_) | Err(_) => kept.push(line),
+                }
+            }
+
+            if kept.is_empty() {
+                fs::remove_file(&path)
+                    .map_err(|err| format!("Failed to remove {}: {err}", path.display()))?;
+            } else {
+                fs::write(&path, format!("{}\n", kept.join("\n")))
+                    .map_err(|err| format!("Failed to rewrite {}: {err}", path.display()))?;
+            }
+        }
+
+        Ok(removed)
     }
 
     fn open_proxy_traffic_jsonl_file(storage_dir: &PathBuf, day_key: &str) -> Result<File, String> {
@@ -913,5 +958,154 @@ mod traffic {
         let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
         era * 146_097 + day_of_era - 719_468
     }
-}
 
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        struct TrafficTestDir {
+            path: PathBuf,
+            _guard: std::sync::MutexGuard<'static, ()>,
+        }
+
+        impl Drop for TrafficTestDir {
+            fn drop(&mut self) {
+                if let Ok(mut dir) = proxy_traffic_test_dir().lock() {
+                    *dir = None;
+                }
+                let _ = fs::remove_dir_all(&self.path);
+            }
+        }
+
+        fn traffic_test_dir(name: &str) -> TrafficTestDir {
+            let guard = proxy_traffic_test_lock().lock().expect("traffic test lock");
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "loopbox-traffic-{name}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create traffic test dir");
+            *proxy_traffic_test_dir()
+                .lock()
+                .expect("traffic test dir lock") = Some(path.clone());
+            TrafficTestDir {
+                path,
+                _guard: guard,
+            }
+        }
+
+        fn append_proxy_traffic_event_to_disk_for_test(
+            event: &ProxyTrafficEvent,
+        ) -> Result<(), String> {
+            let day_key = event_day_key(&event.started_at_utc)
+                .ok_or_else(|| "missing day key".to_string())?;
+            let mut file = open_proxy_traffic_jsonl_file(&proxy_traffic_dir(), &day_key)?;
+            let line = serde_json::to_string(event)
+                .map_err(|err| format!("Failed to encode test event: {err}"))?;
+            writeln!(file, "{line}").map_err(|err| format!("Failed to write test event: {err}"))
+        }
+
+        fn sample_proxy_event(project: &str, service: &str, path: &str) -> ProxyTrafficEvent {
+            ProxyTrafficEvent {
+                id: 0,
+                started_at_utc: "2026-05-05 12:00:00 UTC".to_string(),
+                project_name: project.to_string(),
+                service_name: service.to_string(),
+                protocol: "http1".to_string(),
+                host: format!("{service}.{project}.localhost"),
+                method: "GET".to_string(),
+                path: path.to_string(),
+                status_code: Some(200),
+                stream_id: None,
+                grpc_service: None,
+                grpc_method: None,
+                grpc_status: None,
+                grpc_message: None,
+                duration_ms: 3,
+                request_bytes: 24,
+                response_bytes: 42,
+                request_header_bytes: 24,
+                request_body_bytes: 0,
+                response_header_bytes: 36,
+                response_body_bytes: 6,
+                request_headers: Vec::new(),
+                response_headers: Vec::new(),
+                request_body_preview: None,
+                response_body_preview: Some("hello".to_string()),
+                request_body_truncated: false,
+                response_body_truncated: false,
+                request_body_binary: false,
+                response_body_binary: false,
+                error: None,
+            }
+        }
+
+        #[test]
+        fn proxy_traffic_with_persisted_merges_disk_and_memory() {
+            let _scope = traffic_test_dir("merge");
+            let project = "persist-demo";
+            clear_proxy_traffic_events_for_project(project)
+                .expect("clear existing project traffic");
+
+            push_proxy_traffic_event(sample_proxy_event(project, "web", "/memory"), 100);
+            append_proxy_traffic_event_to_disk_for_test(&sample_proxy_event(
+                project, "web", "/disk",
+            ))
+            .expect("write persisted event");
+
+            let events = proxy_traffic_events_for_project_with_persisted(project, Some("web"), 20)
+                .expect("load merged traffic");
+
+            assert!(events.iter().any(|event| event.path == "/memory"));
+            assert!(events.iter().any(|event| event.path == "/disk"));
+        }
+
+        #[test]
+        fn clear_proxy_traffic_removes_only_selected_project_from_disk() {
+            let _scope = traffic_test_dir("clear");
+            clear_proxy_traffic_events_for_project("demo-a").expect("clear demo-a");
+            clear_proxy_traffic_events_for_project("demo-b").expect("clear demo-b");
+            append_proxy_traffic_event_to_disk_for_test(&sample_proxy_event("demo-a", "web", "/a"))
+                .expect("write demo-a");
+            append_proxy_traffic_event_to_disk_for_test(&sample_proxy_event("demo-b", "web", "/b"))
+                .expect("write demo-b");
+
+            let removed = clear_proxy_traffic_events_for_project("demo-a").expect("clear demo-a");
+
+            assert_eq!(removed, 1);
+            assert!(
+                proxy_traffic_events_for_project_with_persisted("demo-a", None, 20)
+                    .expect("load demo-a")
+                    .is_empty()
+            );
+            assert_eq!(
+                proxy_traffic_events_for_project_with_persisted("demo-b", None, 20)
+                    .expect("load demo-b")
+                    .len(),
+                1
+            );
+        }
+
+        #[test]
+        fn har_export_includes_persisted_events() {
+            let scope = traffic_test_dir("har");
+            let output_path = scope.path.join("export.har");
+            append_proxy_traffic_event_to_disk_for_test(&sample_proxy_event(
+                "har-demo",
+                "web",
+                "/persisted",
+            ))
+            .expect("write persisted event");
+
+            let count = export_proxy_traffic_har_for_project("har-demo", Some("web"), &output_path)
+                .expect("export har");
+
+            let exported = fs::read_to_string(output_path).expect("read exported har");
+            assert_eq!(count, 1);
+            assert!(exported.contains("/persisted"));
+        }
+    }
+}

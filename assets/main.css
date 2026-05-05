@@ -1919,6 +1919,37 @@ p { margin: 0; }
     color: var(--text);
 }
 
+.platform-capability-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+.platform-capability-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.platform-capability-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.platform-capability-value {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
 /* Hosts Editor specific */
 
 .hosts-path {

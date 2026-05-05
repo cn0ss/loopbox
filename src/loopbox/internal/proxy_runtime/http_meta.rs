@@ -46,9 +46,7 @@ pub(super) fn is_protocol_upgrade_response(status_code: Option<u16>, headers: &[
 }
 
 pub(super) fn header_value_from_headers(headers: &[u8], name: &str) -> Option<String> {
-    let Some(end_idx) = header_end_index(headers) else {
-        return None;
-    };
+    let end_idx = header_end_index(headers)?;
     let text = String::from_utf8_lossy(&headers[..end_idx]);
     for raw_line in text.lines().skip(1) {
         let line = raw_line.trim_end_matches('\r');
@@ -72,10 +70,7 @@ pub(super) fn response_should_not_have_body(
     if request_method.eq_ignore_ascii_case("HEAD") {
         return true;
     }
-    match status_code {
-        Some(code) if (100..200).contains(&code) || code == 204 || code == 304 => true,
-        _ => false,
-    }
+    matches!(status_code, Some(code) if (100..200).contains(&code) || code == 204 || code == 304)
 }
 
 pub(super) fn parse_request_host(bytes: &[u8]) -> Option<String> {

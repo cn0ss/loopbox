@@ -7,14 +7,12 @@ mod agent_api;
 mod config;
 mod discovery;
 mod doctor;
-mod edition;
-mod features;
-mod proxy_bridge;
 mod env;
+mod features;
 mod install;
-mod license;
 mod projects;
 mod proxy;
+mod proxy_bridge;
 mod release;
 mod runtime;
 mod system;
@@ -38,34 +36,9 @@ pub use discovery::{
     DiscoverySuggestion, ProjectBlueprintKind, ProjectBlueprintSuggestion,
 };
 pub use doctor::doctor_report;
-#[allow(unused_imports)]
-pub use edition::{current_edition, edition_label, LoopboxEdition};
 
-/// All features are always available — no capability gating.
-pub fn supports_traffic_capture() -> bool {
-    true
-}
-pub fn supports_traffic_capture_mode(_mode: &ProxyCaptureMode) -> bool {
-    true
-}
 pub fn enforce_traffic_capture_mode(mode: ProxyCaptureMode) -> ProxyCaptureMode {
     mode
-}
-pub fn supports_traffic_har_export() -> bool {
-    true
-}
-pub fn supports_grpc_proto_decode() -> bool {
-    true
-}
-pub fn supports_docker_management() -> bool {
-    true
-}
-pub fn supports_pro_features() -> bool {
-    true
-}
-#[allow(dead_code)]
-pub fn supports_ultimate_features() -> bool {
-    true
 }
 #[allow(unused_imports)]
 pub use env::{
@@ -73,12 +46,6 @@ pub use env::{
     write_env_file_content, EnvMergeResult, ParsedEnvFile,
 };
 pub use install::ensure_installed_in_applications;
-#[allow(unused_imports)]
-pub use license::{
-    activate_license_key, build_channel, current_license_tier, init_license_state_at_startup,
-    license_activation_available, license_status_label, start_periodic_license_revalidation,
-    BuildChannel, LicenseTier,
-};
 #[allow(unused_imports)]
 pub use projects::{
     add_project, open_url_for, project_env_exports, project_primary_host, remove_project,
@@ -88,10 +55,9 @@ pub use projects::{
 pub use proxy::{
     clear_proxy_traffic_events_for_project, export_proxy_traffic_har_for_project,
     project_proxy_traffic_capture_mode, project_proxy_traffic_enabled, proxy_traffic_disk_stats,
-    proxy_traffic_events_for_project, proxy_traffic_events_for_project_with_persisted,
-    reverse_proxy_fallback_port, reverse_proxy_status, reverse_proxy_url_for_host,
-    sync_reverse_proxy, ProxyTrafficDiskStats, ProxyTrafficEvent, ProxyTrafficHeader,
-    ReverseProxyStatus,
+    proxy_traffic_events_for_project_with_persisted, reverse_proxy_fallback_port,
+    reverse_proxy_status, reverse_proxy_url_for_host, sync_reverse_proxy, ProxyTrafficDiskStats,
+    ProxyTrafficEvent, ProxyTrafficHeader, ReverseProxyStatus,
 };
 #[allow(unused_imports)]
 pub use release::{
@@ -119,37 +85,19 @@ pub use updater::{
     updater_feed_url, updater_last_checked_utc,
 };
 
-pub fn submit_priority_support_ticket(
-    email: &str,
-    subject: &str,
-    text: &str,
-) -> Result<(), String> {
-    internal::support::submit_priority_support_ticket(
-        email,
-        subject,
-        text,
-        env!("CARGO_PKG_VERSION"),
-    )
+pub fn submit_support_ticket(email: &str, subject: &str, text: &str) -> Result<(), String> {
+    internal::support::submit_support_ticket(email, subject, text, env!("CARGO_PKG_VERSION"))
 }
 
 pub const HOSTS_BLOCK_BEGIN: &str = "# --- loopbox begin ---";
 pub const HOSTS_BLOCK_END: &str = "# --- loopbox end ---";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LoopboxConfig {
     #[serde(default)]
     pub global: GlobalConfig,
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectConfig>,
-}
-
-impl Default for LoopboxConfig {
-    fn default() -> Self {
-        Self {
-            global: GlobalConfig::default(),
-            projects: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

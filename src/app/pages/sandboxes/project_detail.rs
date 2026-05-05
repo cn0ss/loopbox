@@ -568,7 +568,7 @@ pub(super) fn ProjectDetail(
             }
 
             if show_traffic_tab && tab == DetailTab::Traffic {
-                ProjectDetailEeTrafficTab {
+                ProjectDetailTrafficTab {
                     project_name: project_name.clone(),
                     project: project.clone(),
                     config,
@@ -1305,7 +1305,7 @@ pub(super) fn ProjectDetail(
                                                     "+ Port"
                                                 }
                                             }
-                                            ProjectDetailEeServiceEditFields {
+                                            ProjectDetailServiceRuntimeFields {
                                                 service_index: i,
                                                 entry: entry.clone(),
                                                 edit_form,
@@ -1365,11 +1365,11 @@ pub(super) fn ProjectDetail(
                                 }
                             }
                             p { class: "text-dim",
-                                "Optional paths (one per line). Used to decode gRPC protobuf payloads in private builds."
+                                "Optional paths (one per line). Used to decode gRPC protobuf payloads in the traffic inspector."
                             }
                             if !grpc_proto_decode_enabled {
                                 p { class: "text-dim",
-                                    "gRPC proto decode is available in Ultimate."
+                                    "gRPC proto decode is unavailable in this build."
                                 }
                             }
                             label { class: "field field-wide",

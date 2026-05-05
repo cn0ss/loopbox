@@ -18,11 +18,12 @@ where
     U: DeserializeOwned,
 {
     let json = serde_json::to_value(value)
-        .map_err(|err| format!("Failed to serialize EE proxy payload: {err}"))?;
-    serde_json::from_value(json).map_err(|err| format!("Failed to decode EE proxy payload: {err}"))
+        .map_err(|err| format!("Failed to serialize proxy bridge payload: {err}"))?;
+    serde_json::from_value(json)
+        .map_err(|err| format!("Failed to decode proxy bridge payload: {err}"))
 }
 
-fn map_private_status(
+fn map_internal_status(
     status: super::internal::proxy_runtime::ReverseProxyStatus,
 ) -> ReverseProxyStatus {
     ReverseProxyStatus {
@@ -42,11 +43,11 @@ pub(crate) fn override_enabled() -> bool {
 pub(crate) fn sync_reverse_proxy(config: &LoopboxConfig) -> Result<ReverseProxyStatus, String> {
     let cfg = convert::<_, super::internal::proxy_runtime::LoopboxConfig>(config)?;
     let status = super::internal::proxy_runtime::sync_reverse_proxy(&cfg)?;
-    Ok(map_private_status(status))
+    Ok(map_internal_status(status))
 }
 
 pub(crate) fn reverse_proxy_status() -> ReverseProxyStatus {
-    map_private_status(super::internal::proxy_runtime::reverse_proxy_status())
+    map_internal_status(super::internal::proxy_runtime::reverse_proxy_status())
 }
 
 pub(crate) fn reverse_proxy_url_for_host(host: &str) -> Option<String> {

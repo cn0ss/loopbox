@@ -1,8 +1,7 @@
 use crate::app::models::Page;
 use crate::app::pages::agent_api_audit::sidebar_show_agent_api_audit_tab;
 use crate::loopbox::{
-    can_check_for_updates, check_for_updates, edition_label, is_newer_release_tag,
-    LatestReleaseInfo,
+    can_check_for_updates, check_for_updates, is_newer_release_tag, LatestReleaseInfo,
 };
 use dioxus::prelude::*;
 
@@ -112,7 +111,7 @@ pub(super) fn render_sidebar(
             div { class: "sidebar-footer",
                 div { class: "sidebar-edition-row",
                     span { class: "sidebar-version", "{app_version_label}" }
-                    span { class: "sidebar-edition-badge", "{edition_label()}" }
+                    span { class: "sidebar-edition-badge", "public" }
                 }
                 if let Some(release) = update_release {
                     button {

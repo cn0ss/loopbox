@@ -1,9 +1,9 @@
-pub mod privilege;
-pub mod networking;
-pub mod process;
-pub mod terminal;
-pub mod install;
-pub mod updater;
 pub mod dialog;
-pub mod tray;
+pub mod install;
+pub mod networking;
+pub mod privilege;
+pub mod process;
 pub mod runtime;
+pub mod terminal;
+pub mod tray;
+pub mod updater;

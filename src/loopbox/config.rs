@@ -1,8 +1,8 @@
 use super::projects::normalize_domain_suffix;
 use super::{
     default_agent_api_port, default_domain_suffix, default_ip_base, enforce_traffic_capture_mode,
-    service_ports, LoopboxConfig, ProxyCaptureMode, ProxyEndpointConfig,
-    ProxyEndpointProtocol, ServicePortConfig, ServiceRuntimeKind,
+    service_ports, LoopboxConfig, ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol,
+    ServicePortConfig, ServiceRuntimeKind,
 };
 use std::env;
 use std::fs;

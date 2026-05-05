@@ -10,31 +10,6 @@ pub(super) struct GrpcFrameMeta {
     pub(super) complete: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GrpcFrameMetaForTest {
-    pub compressed: bool,
-    pub declared_len: usize,
-    pub complete: bool,
-}
-
-pub fn split_grpc_frames_for_test(bytes: &[u8]) -> (Vec<(GrpcFrameMetaForTest, Vec<u8>)>, bool) {
-    let (frames, trailing) = split_grpc_frames(bytes);
-    let converted = frames
-        .into_iter()
-        .map(|(meta, payload)| {
-            (
-                GrpcFrameMetaForTest {
-                    compressed: meta.compressed,
-                    declared_len: meta.declared_len,
-                    complete: meta.complete,
-                },
-                payload.to_vec(),
-            )
-        })
-        .collect::<Vec<_>>();
-    (converted, trailing)
-}
-
 pub fn render_grpc_preview(
     bytes: &[u8],
     _proto_paths: &[String],
@@ -530,10 +505,6 @@ fn decode_grpc_message_raw(payload: &[u8]) -> Option<String> {
     }
 }
 
-pub fn beautify_protoc_text_output_for_test(raw: &str) -> String {
-    beautify_protoc_text_output(raw)
-}
-
 pub(super) fn beautify_protoc_text_output(raw: &str) -> String {
     let mut lines = Vec::new();
     for line in raw.lines() {
@@ -628,7 +599,7 @@ fn looks_like_text_bytes(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return true;
     }
-    if bytes.iter().any(|b| *b == 0) {
+    if bytes.contains(&0) {
         return false;
     }
     for b in bytes {

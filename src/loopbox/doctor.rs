@@ -8,7 +8,6 @@ use super::{
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
@@ -20,30 +19,34 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
         return issues;
     }
 
+    let hosts_path = crate::platform::hosts::hosts_file_path();
+    let loopback_interface = crate::platform::networking::loopback_interface_label();
+    let proxy_redirect_label = crate::platform::networking::proxy_redirect_label();
+    let dns_flush_command = crate::platform::networking::dns_flush_command();
+
     let proxy_status = reverse_proxy_status();
     if !proxy_status.running {
         issues.push(DoctorIssue::warning(
             None,
             "Reverse proxy is not running. URLs will use direct host:port mode.".to_string(),
         ));
-    } else if proxy_status.using_fallback_port {
-        if proxy_redirect_required(config) {
-            if proxy_redirect_configured(config) {
-                issues.push(DoctorIssue::info(format!(
-                    "Reverse proxy runs on fallback port {} and pf redirect is configured (:80 -> :{}).",
-                    reverse_proxy_fallback_port(),
+    } else if proxy_status.using_fallback_port && proxy_redirect_required(config) {
+        if proxy_redirect_configured(config) {
+            issues.push(DoctorIssue::info(format!(
+                "Reverse proxy runs on fallback port {} and {} is configured (:80 -> :{}).",
+                reverse_proxy_fallback_port(),
+                proxy_redirect_label,
+                reverse_proxy_fallback_port()
+            )));
+        } else {
+            issues.push(DoctorIssue::warning_with_fix(
+                None,
+                format!(
+                    "Reverse proxy runs on fallback port {} but no system redirect is configured. Run System → Setup System to enable domain-only URLs on :80.",
                     reverse_proxy_fallback_port()
-                )));
-            } else {
-                issues.push(DoctorIssue::warning_with_fix(
-                    None,
-                    format!(
-                        "Reverse proxy runs on fallback port {} but no system redirect is configured. Run System → Setup System to enable domain-only URLs on :80.",
-                        reverse_proxy_fallback_port()
-                    ),
-                    DoctorFixAction::ApplySystemSetup,
-                ));
-            }
+                ),
+                DoctorFixAction::ApplySystemSetup,
+            ));
         }
     }
     if let Some(note) = proxy_status.note.as_ref() {
@@ -53,7 +56,7 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
     let mut ips: HashMap<String, Vec<String>> = HashMap::new();
     let mut hosts: HashMap<String, HashSet<String>> = HashMap::new();
     let mut ports_by_ip: HashMap<(String, u16), Vec<String>> = HashMap::new();
-    let hosts_content = std::fs::read_to_string("/etc/hosts").ok();
+    let hosts_content = std::fs::read_to_string(hosts_path).ok();
 
     for (name, project) in &config.projects {
         let project_name = name.clone();
@@ -67,8 +70,8 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
             issues.push(DoctorIssue::warning_with_fix(
                 Some(project_name.clone()),
                 format!(
-                    "Loopback alias '{}' is missing on lo0. Run System → Setup System.",
-                    project_ip
+                    "Loopback address '{}' is missing on {}. Run System → Setup System.",
+                    project_ip, loopback_interface
                 ),
                 DoctorFixAction::ApplySystemSetup,
             ));
@@ -199,7 +202,7 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
             if host_clean.contains('#') {
                 issues.push(DoctorIssue::error(
                     Some(project_name.clone()),
-                    format!("Hostname '{host}' contains '#', which breaks /etc/hosts lines."),
+                    format!("Hostname '{host}' contains '#', which breaks {hosts_path} lines."),
                 ));
             }
             if !is_secure_context_http_host(&host_clean) {
@@ -216,8 +219,8 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
                     issues.push(DoctorIssue::warning_with_fix(
                         Some(project_name.clone()),
                         format!(
-                            "Hostname '{}' is missing from /etc/hosts for {}. Run System → Setup System.",
-                            host_clean, project_ip
+                            "Hostname '{}' is missing from {} for {}. Run System → Setup System.",
+                            host_clean, hosts_path, project_ip
                         ),
                         DoctorFixAction::ApplySystemSetup,
                     ));
@@ -243,8 +246,7 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
                     ),
                     DoctorFixAction::CopyCommand {
                         label: "Copy DNS Flush".to_string(),
-                        command: "sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder"
-                            .to_string(),
+                        command: dns_flush_command.to_string(),
                     },
                 ));
             }

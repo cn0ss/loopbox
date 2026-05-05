@@ -335,12 +335,9 @@ fn script_command_for_name(workdir: &str, script_name: &str) -> Option<String> {
     let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&content) else {
         return None;
     };
-    let Some(scripts) = package_json
+    let scripts = package_json
         .get("scripts")
-        .and_then(|value| value.as_object())
-    else {
-        return None;
-    };
+        .and_then(|value| value.as_object())?;
     let script_command = scripts
         .get(script_name)
         .and_then(|value| value.as_str())

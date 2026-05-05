@@ -52,7 +52,10 @@ fn expand_windows_path(raw: &str) -> String {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
             let mut expanded = std::path::PathBuf::from(profile);
             let rest = path.strip_prefix('~').unwrap_or("");
-            let rest = rest.strip_prefix('\\').or_else(|| rest.strip_prefix('/')).unwrap_or(rest);
+            let rest = rest
+                .strip_prefix('\\')
+                .or_else(|| rest.strip_prefix('/'))
+                .unwrap_or(rest);
             if !rest.is_empty() {
                 expanded.push(rest);
             }

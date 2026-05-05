@@ -15,6 +15,7 @@ const DEFAULT_AGENT_API_AUDIT_LIMIT: usize = 200;
 const MAX_AGENT_API_AUDIT_LIMIT: usize = 5_000;
 const MAX_AGENT_API_AUDIT_EVENTS: usize = 20_000;
 const AGENT_API_AUDIT_BODY_CAPTURE_MAX_BYTES: usize = 256 * 1024;
+const AGENT_API_AUDIT_BODY_READ_MAX_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 struct AgentApiAuditStore {
@@ -29,10 +30,7 @@ fn agent_api_audit_store() -> &'static Mutex<AgentApiAuditStore> {
 }
 
 fn supports_agent_api_audit() -> bool {
-    matches!(
-        crate::loopbox::internal::license::current_license_tier(),
-        crate::loopbox::internal::license::LicenseTier::Commercial
-    )
+    true
 }
 
 fn normalize_agent_api_audit_limit(limit: usize) -> usize {
@@ -68,13 +66,14 @@ pub(super) async fn run_agent_api_audit_middleware(
     let authorization_header_present = request_parts
         .headers
         .contains_key(axum::http::header::AUTHORIZATION);
-    let request_body_bytes = match axum::body::to_bytes(request_body, usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Loopbox agent API audit capture warning (request body): {err}");
-            bytes::Bytes::new()
-        }
-    };
+    let request_body_bytes =
+        match axum::body::to_bytes(request_body, AGENT_API_AUDIT_BODY_READ_MAX_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("Loopbox agent API audit capture warning (request body): {err}");
+                bytes::Bytes::new()
+            }
+        };
     let request_body_bytes_len = request_body_bytes.len();
     let (request_body, request_body_encoding, request_body_truncated) =
         body_snapshot_for_audit(&request_body_bytes);
@@ -87,13 +86,14 @@ pub(super) async fn run_agent_api_audit_middleware(
     let response_version = http_version_label(response_parts.version).to_string();
     let status_code = response_parts.status.as_u16();
     let response_headers = headers_for_audit(&response_parts.headers);
-    let response_body_bytes = match axum::body::to_bytes(response_body, usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Loopbox agent API audit capture warning (response body): {err}");
-            bytes::Bytes::new()
-        }
-    };
+    let response_body_bytes =
+        match axum::body::to_bytes(response_body, AGENT_API_AUDIT_BODY_READ_MAX_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("Loopbox agent API audit capture warning (response body): {err}");
+                bytes::Bytes::new()
+            }
+        };
     let response_body_bytes_len = response_body_bytes.len();
     let (response_body, response_body_encoding, response_body_truncated) =
         body_snapshot_for_audit(&response_body_bytes);
@@ -236,9 +236,20 @@ fn headers_for_audit(headers: &axum::http::HeaderMap) -> Vec<AgentApiAuditHeader
         .iter()
         .map(|(name, value)| AgentApiAuditHeader {
             name: name.as_str().to_string(),
-            value: String::from_utf8_lossy(value.as_bytes()).to_string(),
+            value: audit_header_value(name.as_str(), value),
         })
         .collect()
+}
+
+fn audit_header_value(name: &str, value: &axum::http::HeaderValue) -> String {
+    let lower = name.trim().to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "authorization" | "cookie" | "set-cookie" | "x-api-key" | "proxy-authorization"
+    ) {
+        return "[redacted]".to_string();
+    }
+    String::from_utf8_lossy(value.as_bytes()).to_string()
 }
 
 fn http_version_label(version: axum::http::Version) -> &'static str {
@@ -413,3 +424,46 @@ fn agent_api_audit_dir() -> PathBuf {
     base_dir.join("agent-api-audit")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn headers_for_audit_redacts_sensitive_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer secret-token"),
+        );
+        headers.insert("cookie", HeaderValue::from_static("sid=secret"));
+        headers.insert("x-api-key", HeaderValue::from_static("secret-key"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+        let audited = headers_for_audit(&headers);
+
+        assert!(audited
+            .iter()
+            .any(|h| h.name == "authorization" && h.value == "[redacted]"));
+        assert!(audited
+            .iter()
+            .any(|h| h.name == "cookie" && h.value == "[redacted]"));
+        assert!(audited
+            .iter()
+            .any(|h| h.name == "x-api-key" && h.value == "[redacted]"));
+        assert!(audited
+            .iter()
+            .any(|h| h.name == "content-type" && h.value == "application/json"));
+    }
+
+    #[test]
+    fn body_snapshot_truncates_after_capture_limit() {
+        let payload = vec![b'a'; AGENT_API_AUDIT_BODY_CAPTURE_MAX_BYTES + 8];
+
+        let (body, encoding, truncated) = body_snapshot_for_audit(&payload);
+
+        assert_eq!(encoding, AgentApiAuditBodyEncoding::Utf8);
+        assert!(truncated);
+        assert_eq!(body.len(), AGENT_API_AUDIT_BODY_CAPTURE_MAX_BYTES);
+    }
+}

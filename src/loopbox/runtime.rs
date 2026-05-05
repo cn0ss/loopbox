@@ -1,7 +1,7 @@
 use super::{
     config_path, discover_project_commands, merge_service_env, project_primary_host,
-    reverse_proxy_url_for_host, service_ports, sync_reverse_proxy,
-    LoopboxConfig, ProxyEndpointProtocol, ServiceConfig, ServicePortConfig, ServiceRuntimeKind,
+    reverse_proxy_url_for_host, service_ports, sync_reverse_proxy, LoopboxConfig,
+    ProxyEndpointProtocol, ServiceConfig, ServicePortConfig, ServiceRuntimeKind,
 };
 use axum::http::{HeaderMap, Request, Version};
 use bytes::Bytes;
@@ -315,8 +315,10 @@ fn run_runtime_attach_bridge(args: RuntimeAttachBridgeArgs) -> Result<i32, Strin
         )
     });
 
-    let input_result =
-        crate::platform::runtime::forward_terminal_input_to_fifo(&args.input_path, Arc::clone(&stop));
+    let input_result = crate::platform::runtime::forward_terminal_input_to_fifo(
+        &args.input_path,
+        Arc::clone(&stop),
+    );
     stop.store(true, Ordering::SeqCst);
 
     match output_thread.join() {
@@ -519,7 +521,7 @@ pub fn start_service(
         let port = port_entry.port;
         if port_reachable_with_targets(
             port,
-            &[project.ip.clone()],
+            std::slice::from_ref(&project.ip),
             HEALTHCHECK_RETRIES,
             HEALTHCHECK_TIMEOUT_MS,
         ) {
@@ -1670,6 +1672,7 @@ fn build_pty_wrapped_launch_command(
     format!("exec 3<> {fifo}; exec /bin/bash -lc {inner} <&3 >> {log} 2>&1")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_service_process_via_native_pty_runner(
     config: &LoopboxConfig,
     project_name: &str,

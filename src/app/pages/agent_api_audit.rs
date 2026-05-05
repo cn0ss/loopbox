@@ -1,12 +1,12 @@
 use crate::app::models::{Notice, Page};
 use dioxus::prelude::*;
 
-mod paid;
+mod page;
 
-use paid::AgentApiAuditPage;
+use page::AgentApiAuditPage;
 
 pub(in crate::app) fn sidebar_show_agent_api_audit_tab() -> bool {
-    paid::sidebar_show_agent_api_audit_tab()
+    page::sidebar_show_agent_api_audit_tab()
 }
 
 pub(in crate::app) fn render_agent_api_audit_page(

@@ -1,8 +1,8 @@
 use super::{
-    default_domain_suffix, reverse_proxy_url_for_host, service_ports,
-    AddProjectInput, ContainerServiceConfig, GlobalConfig, LoopboxConfig, OpenTarget,
-    ProjectConfig, ProxyEndpointProtocol, ServiceConfig, ServiceEntry, ServicePortConfig,
-    ServiceRuntimeKind, UpdateProjectInput,
+    default_domain_suffix, reverse_proxy_url_for_host, service_ports, AddProjectInput,
+    ContainerServiceConfig, GlobalConfig, LoopboxConfig, OpenTarget, ProjectConfig,
+    ProxyEndpointProtocol, ServiceConfig, ServiceEntry, ServicePortConfig, ServiceRuntimeKind,
+    UpdateProjectInput,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -310,7 +310,7 @@ fn parse_services(
         let depends_on = parse_depends_on(&entry.depends_on, &name);
         services.push(ServiceConfig {
             name,
-            runtime: runtime.clone(),
+            runtime,
             container,
             ports,
             port: primary_port.as_ref().map(|entry| entry.port),
@@ -351,8 +351,7 @@ fn parse_services(
 
 fn normalize_service_command(raw: &str) -> String {
     raw.replace('\u{2014}', "--")
-        .replace('\u{2013}', "-")
-        .replace('\u{2212}', "-")
+        .replace(['\u{2013}', '\u{2212}'], "-")
 }
 
 fn parse_env_files(raw: &str) -> Vec<String> {
@@ -411,7 +410,7 @@ fn parse_container_service_config(
 }
 
 fn parse_container_string_list(raw: &str) -> Vec<String> {
-    raw.split(|ch: char| ch == '\n' || ch == ',' || ch == ';')
+    raw.split(['\n', ',', ';'])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(|part| part.to_string())
@@ -520,7 +519,7 @@ fn project_host_for(project_name: &str, suffix: &str) -> String {
     format!("{clean_project}.{clean_suffix}")
 }
 
-fn primary_service<'a>(project: &'a ProjectConfig) -> Option<&'a ServiceConfig> {
+fn primary_service(project: &ProjectConfig) -> Option<&ServiceConfig> {
     if let Some(default_name) = project.default_open_service.as_ref() {
         if let Some(service) = project
             .services

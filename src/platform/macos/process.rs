@@ -150,6 +150,5 @@ pub fn process_tree_pids(root_pid: u32) -> Vec<u32> {
 }
 
 pub fn process_group_is_gone(pgid: u32, observed_members: &[u32]) -> bool {
-    process_group_pids(pgid).is_empty()
-        && observed_members.iter().all(|pid| !pid_exists(*pid))
+    process_group_pids(pgid).is_empty() && observed_members.iter().all(|pid| !pid_exists(*pid))
 }

@@ -18,7 +18,6 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::io::Read;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -490,7 +489,7 @@ Agent behavior:\n\
 - Prefer Loopbox-managed hostnames and Loopbox config over guessing ports.\n\
 - Prefer project/runtime inspection before reading logs.\n\
 - Use the OpenAPI document for exact schemas and endpoint details.\n\
-- Remember that request capture may be empty or disabled depending on settings/edition.\n\
+- Remember that request capture may be empty or disabled depending on local settings.\n\
 - There is currently no delete project endpoint; avoid assuming one exists.\n\n\
 Persistence for future agents:\n\
 Add or update a short \"Loopbox Agent API\" section in AGENTS.md or CLAUDE.md with:\n\
@@ -1168,10 +1167,7 @@ fn generate_api_token() -> String {
 }
 
 fn fill_token_from_os_rng(out: &mut [u8]) -> bool {
-    let Ok(mut file) = fs::File::open("/dev/urandom") else {
-        return false;
-    };
-    file.read_exact(out).is_ok()
+    getrandom::fill(out).is_ok()
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -1398,16 +1394,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_spec_includes_project_create_and_update_operations() {
+    fn openapi_spec_includes_documented_routes() {
         let spec = openapi_spec_json(39_393, true);
+        let paths = spec["paths"].as_object().expect("paths object");
+
+        let expected_paths = [
+            (format!("/{AGENT_API_VERSION}/health"), vec!["get"]),
+            (format!("/{AGENT_API_VERSION}/openapi.json"), vec!["get"]),
+            (format!("/{AGENT_API_VERSION}/meta"), vec!["get"]),
+            (
+                format!("/{AGENT_API_VERSION}/projects"),
+                vec!["get", "post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}"),
+                vec!["get", "put"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/runtime"),
+                vec!["get"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/logs"),
+                vec!["get"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/requests"),
+                vec!["get"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/start"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/stop"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/restart"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/start"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/stop"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/restart"),
+                vec!["post"],
+            ),
+        ];
+
+        for (path, methods) in expected_paths {
+            let operations = paths
+                .get(&path)
+                .and_then(|value| value.as_object())
+                .unwrap_or_else(|| panic!("missing OpenAPI path {path}"));
+            for method in methods {
+                assert!(
+                    operations
+                        .get(method)
+                        .map(serde_json::Value::is_object)
+                        .unwrap_or(false),
+                    "missing {method} operation for {path}"
+                );
+            }
+            assert!(
+                !operations.contains_key("delete"),
+                "Agent API must not document delete support for {path}"
+            );
+        }
+
         let projects_path = format!("/{AGENT_API_VERSION}/projects");
         let project_path = format!("/{AGENT_API_VERSION}/projects/{{project}}");
 
-        assert!(spec["paths"][&projects_path]["post"].is_object());
-        assert!(spec["paths"][&project_path]["put"].is_object());
         assert_eq!(
             spec["paths"][&projects_path]["post"]["parameters"][0]["name"],
             "apply_system_setup"
+        );
+        assert_eq!(
+            spec["paths"][&project_path]["put"]["parameters"][1]["name"],
+            "apply_system_setup"
+        );
+        assert_eq!(
+            spec["components"]["securitySchemes"]["bearerAuth"]["scheme"],
+            "bearer"
         );
     }
 
@@ -1451,5 +1525,49 @@ mod tests {
         assert_eq!(entry.container_env, "RUST_LOG=debug");
         assert_eq!(entry.container_volumes, "./data:/data");
         assert!(entry.container_auto_remove);
+    }
+
+    #[test]
+    fn project_service_request_conversion_preserves_legacy_container_runtime() {
+        let request = ProjectServiceRequest {
+            name: "worker".to_string(),
+            ports: vec![],
+            port: Some(8080),
+            protocol: Some(ProxyEndpointProtocol::TcpPassthrough),
+            runtime: Some(ServiceRuntimeKind::Container),
+            command: String::new(),
+            workdir: "/tmp/demo".to_string(),
+            env_files: vec![],
+            depends_on: vec![],
+            autostart: false,
+            health_path: Some("ready".to_string()),
+            container: Some(ContainerServiceConfig {
+                image: "ghcr.io/acme/worker:dev".to_string(),
+                args: vec!["run".to_string(), "--queue=default".to_string()],
+                env: vec!["RUST_LOG=info".to_string(), "WORKERS=2".to_string()],
+                volumes: vec![
+                    "./cache:/cache".to_string(),
+                    "./config:/config:ro".to_string(),
+                ],
+                auto_remove: false,
+            }),
+        };
+
+        let entry = project_service_request_to_entry(request);
+        assert_eq!(entry.runtime, "container");
+        assert_eq!(entry.port, "8080");
+        assert_eq!(entry.protocol, "tcp_passthrough");
+        assert_eq!(entry.health_path, "ready");
+        assert_eq!(entry.ports.len(), 1);
+        assert_eq!(entry.ports[0].port, "8080");
+        assert_eq!(entry.ports[0].protocol, "tcp_passthrough");
+        assert_eq!(entry.container_image, "ghcr.io/acme/worker:dev");
+        assert_eq!(entry.container_args, "run, --queue=default");
+        assert_eq!(entry.container_env, "RUST_LOG=info, WORKERS=2");
+        assert_eq!(
+            entry.container_volumes,
+            "./cache:/cache, ./config:/config:ro"
+        );
+        assert!(!entry.container_auto_remove);
     }
 }

@@ -22,22 +22,23 @@ mod editor_helpers;
 mod filesystem;
 mod helpers;
 mod project_detail;
-mod project_detail_paid;
+mod project_detail_features;
 mod wizard;
-mod wizard_paid;
+mod wizard_features;
 
 use editor_helpers::*;
 use filesystem::*;
 use helpers::*;
 use project_detail::*;
-use project_detail_paid::*;
+use project_detail_features::*;
 use wizard::blank_service_entry as wizard_blank_service_entry;
 use wizard::*;
-use wizard_paid::*;
+use wizard_features::*;
 // ════════════════════════════════════════════
 // Sandboxes Overview (Project Grid)
 // ════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn render_sandboxes_page(
     page: Page,
     selected_project_data: Option<(String, ProjectConfig)>,
@@ -165,6 +166,7 @@ pub(in crate::app) fn render_sandboxes_page(
 // New Sandbox Page (Wizard)
 // ════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn render_new_sandbox_page(
     page: Page,
     add_form_snapshot: AddProjectInput,

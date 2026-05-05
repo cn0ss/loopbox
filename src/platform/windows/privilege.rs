@@ -4,9 +4,7 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn run_privileged_script(script_path: &Path) -> Result<(), String> {
-    let path_str = script_path
-        .to_string_lossy()
-        .replace('\'', "''");
+    let path_str = script_path.to_string_lossy().replace('\'', "''");
 
     let ps_command = format!(
         "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c \"{}\"' -Verb RunAs -Wait",
@@ -46,7 +44,10 @@ pub fn ask_user_confirmation(message: &str, action_label: &str) -> Result<bool, 
         .map_err(|err| format!("Failed to show dialog: {err}"))?;
 
     if !output.status.success() {
-        return Err(format_output_error("Failed to show confirmation dialog.", &output));
+        return Err(format_output_error(
+            "Failed to show confirmation dialog.",
+            &output,
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();

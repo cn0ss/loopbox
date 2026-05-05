@@ -45,7 +45,9 @@ pub fn apply_networking_script(
 
     let ips = redirect_target_ips(projects);
 
-    script.push_str("\r\nREM 3) Configure port proxy for domain-only HTTP access (:80 -> proxy fallback)\r\n");
+    script.push_str(
+        "\r\nREM 3) Configure port proxy for domain-only HTTP access (:80 -> proxy fallback)\r\n",
+    );
     for ip in &ips {
         script.push_str(&format!(
             "netsh interface portproxy add v4tov4 listenport={} listenaddress={} connectport={} connectaddress=127.0.0.1 >nul 2>&1\r\n",
@@ -161,6 +163,14 @@ pub fn proxy_redirect_configured_on_system(
 
 pub fn dns_flush_command() -> &'static str {
     "ipconfig /flushdns"
+}
+
+pub fn loopback_interface_label() -> &'static str {
+    LOOPBACK_ADAPTER
+}
+
+pub fn proxy_redirect_label() -> &'static str {
+    "netsh portproxy redirect"
 }
 
 fn redirect_target_ips(

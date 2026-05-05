@@ -1,1 +1,0 @@
-define_loopbox_sandboxes_project_detail_paid!();

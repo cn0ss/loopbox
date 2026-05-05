@@ -31,13 +31,10 @@ pub fn run_privileged_script(script_path: &Path) -> Result<(), String> {
     }
 }
 
+#[allow(dead_code)]
 pub fn ask_user_confirmation(message: &str, action_label: &str) -> Result<bool, String> {
-    let escaped_message = message
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let escaped_label = action_label
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let escaped_message = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_label = action_label.replace('\\', "\\\\").replace('"', "\\\"");
 
     let script = format!(
         "display dialog \"{escaped_message}\" buttons {{\"Cancel\", \"{escaped_label}\"}} default button \"{escaped_label}\""

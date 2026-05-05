@@ -29,7 +29,7 @@ fn highlight_hosts_line(line: &str) -> String {
 
     // IP + hostnames: first token is IP (key color), rest are hostnames (val color)
     let leading_ws = &line[..line.len() - trimmed.len()];
-    let mut parts = trimmed.splitn(2, |c: char| c == ' ' || c == '\t');
+    let mut parts = trimmed.splitn(2, [' ', '\t']);
     let ip = parts.next().unwrap_or("");
     let rest = parts.next().unwrap_or("");
 
@@ -109,12 +109,61 @@ fn focus_hosts_search_at(start: usize, end: usize) {
     run_webview_js(&js);
 }
 
+fn platform_support_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS primary"
+    } else if cfg!(target_os = "windows") {
+        "Windows experimental"
+    } else {
+        "unsupported platform"
+    }
+}
+
+fn platform_support_summary() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Loopback aliases, hosts management, pf redirects, Sparkle updates, Terminal attach, and PTY input are available on macOS."
+    } else if cfg!(target_os = "windows") {
+        "Hosts management, loopback aliases, netsh portproxy redirects, and standard process runtime are available. PTY attach/input and auto-update are not yet available on Windows."
+    } else {
+        "Loopbox currently ships platform implementations for macOS and experimental Windows builds."
+    }
+}
+
+fn platform_capability_rows() -> Vec<(&'static str, &'static str)> {
+    if cfg!(target_os = "macos") {
+        vec![
+            ("Loopback aliases", "lo0 aliases"),
+            ("Domain-only HTTP", "pf redirect"),
+            ("Hosts file", "/etc/hosts"),
+            ("Terminal attach", "Terminal.app + PTY"),
+            ("Updates", "Sparkle"),
+        ]
+    } else if cfg!(target_os = "windows") {
+        vec![
+            ("Loopback aliases", "netsh interface ipv4"),
+            ("Domain-only HTTP", "netsh portproxy"),
+            ("Hosts file", r"C:\Windows\System32\drivers\etc\hosts"),
+            ("Terminal attach", "standard logs only"),
+            ("Updates", "manual download"),
+        ]
+    } else {
+        vec![
+            ("Loopback aliases", "not available"),
+            ("Domain-only HTTP", "not available"),
+            ("Hosts file", "platform dependent"),
+            ("Terminal attach", "not available"),
+            ("Updates", "not available"),
+        ]
+    }
+}
+
 // ════════════════════════════════════════════
 // Hosts Editor Component
 // ════════════════════════════════════════════
 
 #[component]
 fn HostsEditor(
+    hosts_path: String,
     hosts_is_loaded: bool,
     hosts_dirty: bool,
     hosts_outside_danger: bool,
@@ -126,6 +175,8 @@ fn HostsEditor(
     let mut search_open = use_signal(|| false);
     let mut search_query = use_signal(String::new);
     let mut search_index = use_signal(|| 0_usize);
+    let reloaded_hosts_notice = format!("Reloaded {}", hosts_path);
+    let loaded_hosts_notice = format!("Loaded {}", hosts_path);
 
     let content = hosts_content();
     let original = hosts_original();
@@ -175,13 +226,13 @@ fn HostsEditor(
     rsx! {
         section { class: "panel",
             div { class: "panel-header",
-                div {
-                    h2 { "Hosts Editor" }
-                    div { class: "hosts-path",
-                        span { class: "hosts-path-icon", "\u{25B8}" }
-                        span { "/etc/hosts" }
+                    div {
+                        h2 { "Hosts Editor" }
+                        div { class: "hosts-path",
+                            span { class: "hosts-path-icon", "\u{25B8}" }
+                            span { "{hosts_path}" }
+                        }
                     }
-                }
                 div { class: "panel-badges",
                     if dirty {
                         span { class: "dirty-badge", "\u{25CF} unsaved" }
@@ -206,7 +257,7 @@ fn HostsEditor(
                     // ── Toolbar ──
                     div { class: "code-editor-toolbar",
                         div { class: "code-editor-toolbar-left",
-                            span { class: "code-editor-file-badge", "/etc/hosts" }
+                            span { class: "code-editor-file-badge", "{hosts_path}" }
                             if dirty {
                                 span { class: "code-editor-dirty-dot" }
                                 span { class: "code-editor-dirty-label", "modified" }
@@ -215,7 +266,7 @@ fn HostsEditor(
                         div { class: "code-editor-toolbar-right",
                             button {
                                 class: "code-editor-toolbar-btn",
-                                title: "Find (Cmd+F)",
+                                title: "Find (Ctrl/Cmd+F)",
                                 onclick: move |_| {
                                     let opening = !s_open;
                                     search_open.set(opening);
@@ -255,7 +306,7 @@ fn HostsEditor(
                                         Ok(new_content) => {
                                             hosts_content.set(new_content.clone());
                                             hosts_original.set(new_content);
-                                            set_notice_info(notice, "Reloaded /etc/hosts");
+                                            set_notice_info(notice, reloaded_hosts_notice.clone());
                                         }
                                         Err(err) => set_notice_error(notice, err),
                                     }
@@ -436,7 +487,7 @@ fn HostsEditor(
                                     hosts_content.set(new_content.clone());
                                     hosts_original.set(new_content);
                                     hosts_loaded.set(true);
-                                    set_notice_info(notice, "Loaded /etc/hosts");
+                                    set_notice_info(notice, loaded_hosts_notice.clone());
                                 }
                                 Err(err) => set_notice_error(notice, err),
                             }
@@ -449,6 +500,7 @@ fn HostsEditor(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn render_system_page(
     page: Page,
     setup_alias_count: usize,
@@ -471,6 +523,13 @@ pub(in crate::app) fn render_system_page(
     hosts_original: Signal<String>,
     hosts_loaded: Signal<bool>,
 ) -> Element {
+    let hosts_path = crate::platform::hosts::hosts_file_path().to_string();
+    let system_setup_summary = format!(
+        "Apply loopback network setup, refresh the managed {} block, and sync domain-only URL redirect rules.",
+        hosts_path
+    );
+    let managed_hosts_label = format!("Managed {} Block", hosts_path);
+
     rsx! {
         if page == Page::System {
             div { class: "page",
@@ -480,12 +539,31 @@ pub(in crate::app) fn render_system_page(
                     }
                 }
 
+                section { class: "panel platform-support-panel",
+                    div { class: "panel-header",
+                        div {
+                            h2 { "Platform Support" }
+                            p { class: "panel-subtitle", "{platform_support_summary()}" }
+                        }
+                        span { class: "panel-badge", "{platform_support_label()}" }
+                    }
+
+                    div { class: "platform-capability-grid",
+                        for (label, value) in platform_capability_rows() {
+                            div { class: "platform-capability-row", key: "{label}",
+                                span { class: "platform-capability-label", "{label}" }
+                                span { class: "platform-capability-value", "{value}" }
+                            }
+                        }
+                    }
+                }
+
                 section { class: "panel",
                     div { class: "panel-header",
                         div {
                             h2 { "System Setup" }
                             p { class: "panel-subtitle",
-                                "Apply loopback aliases, refresh the managed /etc/hosts block, and sync pf redirect rules."
+                                "{system_setup_summary}"
                             }
                         }
                         span { class: "panel-badge", "admin required" }
@@ -494,7 +572,7 @@ pub(in crate::app) fn render_system_page(
                     div { class: "setup-stats",
                         div { class: "setup-stat",
                             span { class: "setup-stat-value", "{setup_alias_count}" }
-                            span { class: "setup-stat-label", "aliases" }
+                            span { class: "setup-stat-label", "loopback IPs" }
                         }
                         div { class: "setup-stat",
                             span { class: "setup-stat-value", "{setup_lines_count}" }
@@ -554,7 +632,7 @@ pub(in crate::app) fn render_system_page(
                         }
                     } else {
                         p { class: "panel-help",
-                            "You will get a macOS admin prompt when applying setup."
+                            "You will get an elevated system prompt when applying setup."
                         }
                     }
 
@@ -577,7 +655,7 @@ pub(in crate::app) fn render_system_page(
                         }
                     }
 
-                    h3 { class: "panel-section-title", "Managed /etc/hosts Block" }
+                    h3 { class: "panel-section-title", "{managed_hosts_label}" }
                     textarea {
                         class: "code-box code-box-sm",
                         readonly: true,
@@ -586,6 +664,7 @@ pub(in crate::app) fn render_system_page(
                 }
 
                 HostsEditor {
+                    hosts_path,
                     hosts_is_loaded,
                     hosts_dirty,
                     hosts_outside_danger,

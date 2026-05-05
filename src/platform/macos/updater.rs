@@ -58,8 +58,7 @@ pub fn updater_feed_url() -> Option<String> {
 
 pub fn updater_automatic_checks_enabled() -> Option<bool> {
     let mut value = false;
-    let has_value =
-        unsafe { loopbox_updater_automatic_checks_enabled(&mut value as *mut bool) };
+    let has_value = unsafe { loopbox_updater_automatic_checks_enabled(&mut value as *mut bool) };
     if has_value {
         Some(value)
     } else {

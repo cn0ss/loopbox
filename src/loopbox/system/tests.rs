@@ -1,7 +1,4 @@
-use super::{
-    managed_hosts_block, managed_proxy_pf_anchor, proxy_redirect_required,
-    PROXY_REDIRECT_SOURCE_PORT,
-};
+use super::{apply_script, managed_hosts_block, proxy_redirect_required};
 use crate::loopbox::{GlobalConfig, LoopboxConfig, ProjectConfig, ServiceConfig};
 use std::collections::BTreeMap;
 
@@ -57,11 +54,11 @@ fn proxy_anchor_generation_contains_expected_rule() {
     };
 
     assert!(proxy_redirect_required(&config));
-    let rules = managed_proxy_pf_anchor(&config);
-    assert!(rules.contains("127.0.0.30"));
-    assert!(rules.contains("127.0.0.1"));
-    assert!(rules.contains(&format!("port {PROXY_REDIRECT_SOURCE_PORT}")));
-    assert!(rules.contains("-> 127.0.0.1 port 18080"));
+    let script = apply_script(&config);
+    assert!(script.contains("127.0.0.30"));
+    assert!(script.contains("127.0.0.1"));
+    assert!(script.contains("port 80"));
+    assert!(script.contains("18080"));
 }
 
 #[test]
