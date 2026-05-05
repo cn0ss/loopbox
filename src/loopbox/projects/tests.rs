@@ -1,4 +1,5 @@
 use super::*;
+use crate::loopbox::agent_api_discovery_path;
 use crate::loopbox::LoopboxConfig;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -287,7 +288,8 @@ fn add_project_writes_agents_guidance_file() {
     assert!(agents.contains("## Loopbox Agent API"));
     assert!(agents.contains("Read discovery_file first on every new session or reconnect."));
     assert!(agents.contains("http://127.0.0.1:39393/v1/openapi.json"));
-    assert!(agents.contains("/Users/niklas/.config/loopbox/agent-api.json"));
+    let expected_discovery_path = agent_api_discovery_path().display().to_string();
+    assert!(agents.contains(&expected_discovery_path));
 
     let _ = fs::remove_dir_all(&root);
 }

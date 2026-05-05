@@ -2,7 +2,7 @@ use super::*;
 use crate::loopbox::{GlobalConfig, ProjectConfig, ProxyEndpointProtocol, ServicePortConfig};
 use std::collections::BTreeMap;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn nonce() -> String {
     let nanos = SystemTime::now()
@@ -10,6 +10,17 @@ fn nonce() -> String {
         .unwrap_or_default()
         .as_nanos();
     nanos.to_string()
+}
+
+fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if !pid_exists(pid) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    !pid_exists(pid)
 }
 
 fn runtime_config_with_port(
@@ -999,9 +1010,8 @@ fn stop_service_terminates_descendant_process_tree() {
     let stopped = stop_service(&project, &service).expect("stop service");
     assert_eq!(stopped.state, ServiceRuntimeState::Stopped);
 
-    thread::sleep(Duration::from_millis(120));
-    let descendant_alive = pid_exists(child_pid);
-    if descendant_alive {
+    let descendant_exited = wait_for_pid_exit(child_pid, Duration::from_secs(2));
+    if !descendant_exited {
         let _ = terminate_pid_if_alive(child_pid, false);
     }
 
@@ -1009,7 +1019,7 @@ fn stop_service_terminates_descendant_process_tree() {
     let _ = std::fs::remove_file(&child_pid_path);
 
     assert!(
-        !descendant_alive,
+        descendant_exited,
         "descendant process {child_pid} should be terminated by stop_service"
     );
 }
@@ -1060,9 +1070,8 @@ fn stop_service_terminates_group_members_when_leader_exits_early() {
     let stopped = stop_service(&project, &service).expect("stop service");
     assert_eq!(stopped.state, ServiceRuntimeState::Stopped);
 
-    thread::sleep(Duration::from_millis(120));
-    let descendant_alive = pid_exists(child_pid);
-    if descendant_alive {
+    let descendant_exited = wait_for_pid_exit(child_pid, Duration::from_secs(2));
+    if !descendant_exited {
         let _ = terminate_pid_if_alive(child_pid, false);
     }
 
@@ -1070,7 +1079,7 @@ fn stop_service_terminates_group_members_when_leader_exits_early() {
     let _ = std::fs::remove_file(&child_pid_path);
 
     assert!(
-        !descendant_alive,
+        descendant_exited,
         "detached group member {child_pid} should be terminated by stop_service"
     );
 }
