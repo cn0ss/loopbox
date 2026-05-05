@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.2 - 2026-05-05
+
 ### Added
 - Added persisted service resource metrics for CPU, memory, process counts, and container stats, including Runtime UI summaries, per-project trend cards, Settings controls, and Agent API `/resources` output.
 - Added a headless Agent API server mode for CI/smoke validation without launching the desktop UI.
