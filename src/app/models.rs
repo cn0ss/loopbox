@@ -1,4 +1,6 @@
 use crate::loopbox::{ProjectConfig, ServiceEntry};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 // ── Navigation ──
 
@@ -6,6 +8,7 @@ use crate::loopbox::{ProjectConfig, ServiceEntry};
 pub(crate) enum Page {
     Sandboxes,
     NewSandbox,
+    Agents,
     Runtime,
     AgentApiAudit,
     System,
@@ -16,6 +19,7 @@ pub(crate) enum Page {
 #[allow(dead_code)]
 pub(super) enum DetailTab {
     Services,
+    Resources,
     Logs,
     Traffic,
     Environment,
@@ -23,10 +27,14 @@ pub(super) enum DetailTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RuntimeFilter {
+pub(crate) enum RuntimeFilter {
     All,
     Running,
+    Stopped,
     Unhealthy,
+    Crashed,
+    Containers,
+    Processes,
 }
 
 // ── Notifications ──
@@ -50,6 +58,7 @@ impl NoticeKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Notice {
+    id: u64,
     pub(crate) kind: NoticeKind,
     pub(crate) message: String,
 }
@@ -57,6 +66,7 @@ pub(crate) struct Notice {
 impl Notice {
     pub(crate) fn success(message: impl Into<String>) -> Self {
         Self {
+            id: next_notice_id(),
             kind: NoticeKind::Success,
             message: message.into(),
         }
@@ -64,6 +74,7 @@ impl Notice {
 
     pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
+            id: next_notice_id(),
             kind: NoticeKind::Error,
             message: message.into(),
         }
@@ -71,9 +82,57 @@ impl Notice {
 
     pub(crate) fn info(message: impl Into<String>) -> Self {
         Self {
+            id: next_notice_id(),
             kind: NoticeKind::Info,
             message: message.into(),
         }
+    }
+
+    pub(crate) fn dismiss_after(&self) -> Duration {
+        match self.kind {
+            NoticeKind::Success | NoticeKind::Info => Duration::from_millis(3_500),
+            NoticeKind::Error => Duration::from_millis(8_000),
+        }
+    }
+}
+
+static NEXT_NOTICE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_notice_id() -> u64 {
+    NEXT_NOTICE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::Notice;
+    use std::time::Duration;
+
+    #[test]
+    fn success_and_info_notices_dismiss_quickly() {
+        assert_eq!(
+            Notice::success("Saved.").dismiss_after(),
+            Duration::from_millis(3_500)
+        );
+        assert_eq!(
+            Notice::info("Opened.").dismiss_after(),
+            Duration::from_millis(3_500)
+        );
+    }
+
+    #[test]
+    fn error_notices_stay_visible_longer() {
+        assert_eq!(
+            Notice::error("Failed.").dismiss_after(),
+            Duration::from_millis(8_000)
+        );
+    }
+
+    #[test]
+    fn notices_with_same_kind_and_message_have_unique_identity() {
+        let first = Notice::info("Saved.");
+        let second = Notice::info("Saved.");
+
+        assert_ne!(first, second);
     }
 }
 

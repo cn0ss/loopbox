@@ -1,6 +1,13 @@
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessResourceUsage {
+    pub cpu_percent: f64,
+    pub memory_bytes: u64,
+    pub process_count: usize,
+}
+
 pub fn kill_process(pid: u32, signal: &str) -> Result<(), String> {
     if pid == 0 {
         return Err("Refusing to signal invalid pid 0.".to_string());
@@ -135,4 +142,69 @@ pub fn process_tree_pids(root_pid: u32) -> Vec<u32> {
 
 pub fn process_group_is_gone(pgid: u32, observed_members: &[u32]) -> bool {
     process_group_pids(pgid).is_empty() && observed_members.iter().all(|pid| !pid_exists(*pid))
+}
+
+pub fn process_tree_resource_usage(root_pid: u32) -> Result<ProcessResourceUsage, String> {
+    let pids = process_tree_pids(root_pid);
+    if pids.is_empty() {
+        return Err(format!("No live process tree found for pid {root_pid}."));
+    }
+
+    let output = Command::new("wmic")
+        .args([
+            "path",
+            "Win32_PerfFormattedData_PerfProc_Process",
+            "get",
+            "IDProcess,PercentProcessorTime,WorkingSet",
+            "/format:csv",
+        ])
+        .output()
+        .map_err(|err| format!("Failed to inspect resource usage for pid {root_pid}: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Resource usage inspection failed for pid {root_pid}."
+        ));
+    }
+    process_resource_usage_from_wmic_output(&String::from_utf8_lossy(&output.stdout), &pids)
+}
+
+fn process_resource_usage_from_wmic_output(
+    stdout: &str,
+    pids: &[u32],
+) -> Result<ProcessResourceUsage, String> {
+    let pid_set = pids.iter().copied().collect::<HashSet<_>>();
+    let mut cpu_percent = 0.0_f64;
+    let mut memory_bytes = 0_u64;
+    let mut process_count = 0_usize;
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("Node,") {
+            continue;
+        }
+        let parts = trimmed.split(',').collect::<Vec<_>>();
+        if parts.len() < 4 {
+            continue;
+        }
+        let pid = parts[1].trim().parse::<u32>().ok();
+        let Some(pid) = pid.filter(|pid| pid_set.contains(pid)) else {
+            continue;
+        };
+        let _ = pid;
+        let cpu = parts[2].trim().parse::<f64>().unwrap_or(0.0);
+        let working_set = parts[3].trim().parse::<u64>().unwrap_or(0);
+        cpu_percent += cpu;
+        memory_bytes = memory_bytes.saturating_add(working_set);
+        process_count = process_count.saturating_add(1);
+    }
+
+    if process_count == 0 {
+        return Err("Resource usage inspection returned no process rows.".to_string());
+    }
+
+    Ok(ProcessResourceUsage {
+        cpu_percent,
+        memory_bytes,
+        process_count,
+    })
 }

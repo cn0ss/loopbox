@@ -1,7 +1,7 @@
 use super::*;
 use crate::loopbox::{
     GlobalConfig, LoopboxConfig, ProjectConfig, ProxyCaptureMode, ProxyEndpointConfig,
-    ProxyEndpointProtocol, ServiceConfig,
+    ProxyEndpointProtocol, ResourceMetricsSettings, ServiceConfig,
 };
 use std::collections::BTreeMap;
 
@@ -99,6 +99,39 @@ fn normalize_config_migrates_legacy_body_preview_flag_to_capture_mode() {
         config.global.proxy_traffic.capture_mode_default,
         expected_mode
     );
+}
+
+#[test]
+fn normalize_config_defaults_and_clamps_resource_metrics_settings() {
+    let mut config = LoopboxConfig {
+        global: GlobalConfig {
+            resource_metrics: ResourceMetricsSettings {
+                enabled: true,
+                sample_interval_secs: 0,
+                retention_days: 255,
+                max_storage_mb: 10_000,
+            },
+            ..GlobalConfig::default()
+        },
+        projects: BTreeMap::new(),
+    };
+
+    normalize_config(&mut config);
+
+    assert!(config.global.resource_metrics.enabled);
+    assert_eq!(config.global.resource_metrics.sample_interval_secs, 5);
+    assert_eq!(config.global.resource_metrics.retention_days, 90);
+    assert_eq!(config.global.resource_metrics.max_storage_mb, 5_000);
+
+    config.global.resource_metrics.sample_interval_secs = 1;
+    config.global.resource_metrics.retention_days = 0;
+    config.global.resource_metrics.max_storage_mb = 1;
+
+    normalize_config(&mut config);
+
+    assert_eq!(config.global.resource_metrics.sample_interval_secs, 2);
+    assert_eq!(config.global.resource_metrics.retention_days, 7);
+    assert_eq!(config.global.resource_metrics.max_storage_mb, 25);
 }
 
 #[test]

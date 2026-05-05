@@ -4,16 +4,20 @@ use std::collections::BTreeMap;
 #[macro_use]
 mod internal;
 mod agent_api;
+mod codex_app;
+mod codex_protocol;
 mod config;
 mod discovery;
 mod doctor;
 mod env;
 mod features;
 mod install;
+mod mcp;
 mod projects;
 mod proxy;
 mod proxy_bridge;
 mod release;
+mod resource_metrics;
 mod runtime;
 mod system;
 mod updater;
@@ -22,8 +26,20 @@ mod updater;
 pub use agent_api::{
     agent_api_audit_events, agent_api_bootstrap_prompt, agent_api_bootstrap_prompt_for_values,
     agent_api_discovery_path, agent_api_token_path, clear_agent_api_audit_events,
-    ensure_project_agent_guidance, start_agent_api_server, sync_agent_api_server,
-    AgentApiServerInfo,
+    ensure_project_agent_guidance, run_agent_api_subcommand_from_args, start_agent_api_server,
+    sync_agent_api_server, sync_reverse_proxy_sidecar, AgentApiServerInfo,
+};
+#[allow(unused_imports)]
+pub use codex_app::{
+    codex_agents_accept_request, codex_agents_decline_request, codex_agents_interrupt_turn,
+    codex_agents_new_chat, codex_agents_prefill_prompt, codex_agents_reload_tools,
+    codex_agents_resume_thread, codex_agents_send_message, codex_agents_snapshot,
+    codex_agents_start, codex_agents_stop, CodexAgentAuthState, CodexAgentModel,
+    CodexAgentPendingRequest, CodexAgentThreadSummary, CodexAgentsSnapshot,
+};
+pub use codex_protocol::{
+    build_notification_line, build_request_line, build_response_line, item_to_transcript,
+    parse_jsonrpc_line, CodexInbound, CodexRpcError, CodexTranscriptItem, CodexTranscriptState,
 };
 #[allow(unused_imports)]
 pub use config::{
@@ -36,6 +52,7 @@ pub use discovery::{
     DiscoverySuggestion, ProjectBlueprintKind, ProjectBlueprintSuggestion,
 };
 pub use doctor::doctor_report;
+pub use mcp::run_loopbox_mcp_subcommand_from_args;
 
 pub fn enforce_traffic_capture_mode(mode: ProxyCaptureMode) -> ProxyCaptureMode {
     mode
@@ -48,16 +65,19 @@ pub use env::{
 pub use install::ensure_installed_in_applications;
 #[allow(unused_imports)]
 pub use projects::{
-    add_project, open_url_for, project_env_exports, project_primary_host, remove_project,
-    update_project,
+    add_project, open_url_for, preview_add_project, project_env_exports, project_primary_host,
+    remove_project, update_project,
 };
 #[allow(unused_imports)]
 pub use proxy::{
-    clear_proxy_traffic_events_for_project, export_proxy_traffic_har_for_project,
-    project_proxy_traffic_capture_mode, project_proxy_traffic_enabled, proxy_traffic_disk_stats,
-    proxy_traffic_events_for_project_with_persisted, reverse_proxy_fallback_port,
-    reverse_proxy_status, reverse_proxy_url_for_host, sync_reverse_proxy, ProxyTrafficDiskStats,
-    ProxyTrafficEvent, ProxyTrafficHeader, ReverseProxyStatus,
+    clear_proxy_traffic_events_for_project, clear_reverse_proxy_sidecar_status,
+    effective_reverse_proxy_status, effective_reverse_proxy_url_for_host,
+    export_proxy_traffic_har_for_project, project_proxy_traffic_capture_mode,
+    project_proxy_traffic_enabled, proxy_traffic_disk_stats,
+    proxy_traffic_events_for_project_with_persisted, record_reverse_proxy_sidecar_status,
+    reverse_proxy_fallback_port, reverse_proxy_status, reverse_proxy_url_for_host,
+    sync_reverse_proxy, ProxyTrafficDiskStats, ProxyTrafficEvent, ProxyTrafficHeader,
+    ReverseProxyStatus,
 };
 #[allow(unused_imports)]
 pub use release::{
@@ -65,12 +85,20 @@ pub use release::{
     LatestReleaseInfo,
 };
 #[allow(unused_imports)]
+pub use resource_metrics::{
+    resource_metrics_disk_stats, resource_metrics_latest_for_config,
+    resource_metrics_series_for_project, sync_resource_metrics_sampler, ResourceMetricsDiskStats,
+    ResourceMetricsSettings, ServiceResourceSample,
+};
+#[allow(unused_imports)]
 pub use runtime::{
     cleanup_stale_runtime_processes, clear_service_logs, open_terminal_attach_for_service,
     open_terminal_for_service, restart_service, run_runtime_subcommand_from_args,
-    send_service_input, service_input_attached, service_log_attached, service_logs,
-    service_logs_tail, service_runtime_status, start_project_all, start_service, stop_project_all,
-    stop_service, ServiceRuntimeSnapshot, ServiceRuntimeState,
+    send_service_input, send_terminal_client_message, service_input_attached, service_log_attached,
+    service_logs, service_logs_tail, service_runtime_status, service_terminal_attached,
+    start_project_all, start_service, stop_project_all, stop_service, terminal_session_snapshot,
+    ServiceRuntimeSnapshot, ServiceRuntimeState, TerminalClientMessage, TerminalFrame,
+    TerminalKeyAction, TerminalMods, TerminalMouseKind, TerminalServerMessage,
 };
 #[allow(unused_imports)]
 pub use system::revert_script;
@@ -87,6 +115,12 @@ pub use updater::{
 
 pub fn submit_support_ticket(email: &str, subject: &str, text: &str) -> Result<(), String> {
     internal::support::submit_support_ticket(email, subject, text, env!("CARGO_PKG_VERSION"))
+}
+
+pub fn docker_runtime_unavailable_message() -> Option<String> {
+    internal::runtime_container::docker_runtime_unavailable_message(
+        &internal::runtime_container::docker_runtime_status(),
+    )
 }
 
 pub const HOSTS_BLOCK_BEGIN: &str = "# --- loopbox begin ---";
@@ -113,7 +147,11 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub agent_api: AgentApiSettings,
     #[serde(default)]
+    pub codex_agents: CodexAgentsSettings,
+    #[serde(default)]
     pub proxy_traffic: ProxyTrafficSettings,
+    #[serde(default)]
+    pub resource_metrics: ResourceMetricsSettings,
     #[serde(default)]
     pub proxy_endpoints: Vec<ProxyEndpointConfig>,
 }
@@ -126,8 +164,36 @@ impl Default for GlobalConfig {
             ip_range_start: default_ip_range_start(),
             ip_range_end: default_ip_range_end(),
             agent_api: AgentApiSettings::default(),
+            codex_agents: CodexAgentsSettings::default(),
             proxy_traffic: ProxyTrafficSettings::default(),
+            resource_metrics: ResourceMetricsSettings::default(),
             proxy_endpoints: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexAgentsSettings {
+    #[serde(default = "default_codex_agents_enabled")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_binary: Option<String>,
+    #[serde(default = "default_codex_agents_model")]
+    pub default_model: String,
+    #[serde(default = "default_codex_agents_effort")]
+    pub default_effort: String,
+    #[serde(default = "default_codex_agents_sandbox")]
+    pub default_sandbox: String,
+}
+
+impl Default for CodexAgentsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_codex_agents_enabled(),
+            codex_binary: None,
+            default_model: default_codex_agents_model(),
+            default_effort: default_codex_agents_effort(),
+            default_sandbox: default_codex_agents_sandbox(),
         }
     }
 }
@@ -591,6 +657,22 @@ fn default_agent_api_port() -> u16 {
 
 fn default_agent_api_auth_enabled() -> bool {
     true
+}
+
+fn default_codex_agents_enabled() -> bool {
+    true
+}
+
+fn default_codex_agents_model() -> String {
+    "gpt-5.4".to_string()
+}
+
+fn default_codex_agents_effort() -> String {
+    "medium".to_string()
+}
+
+fn default_codex_agents_sandbox() -> String {
+    "workspace-write".to_string()
 }
 
 fn default_proxy_capture_mode() -> ProxyCaptureMode {

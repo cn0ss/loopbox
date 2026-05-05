@@ -1,6 +1,6 @@
 use super::{
     config_path, discover_project_commands, merge_service_env, project_primary_host,
-    reverse_proxy_url_for_host, service_ports, sync_reverse_proxy, LoopboxConfig,
+    reverse_proxy_url_for_host, service_ports, sync_reverse_proxy_sidecar, LoopboxConfig,
     ProxyEndpointProtocol, ServiceConfig, ServicePortConfig, ServiceRuntimeKind,
 };
 use axum::http::{HeaderMap, Request, Version};
@@ -21,6 +21,7 @@ mod container;
 mod health;
 mod process;
 mod terminal;
+mod terminal_session;
 mod vite;
 
 use container::*;
@@ -28,6 +29,13 @@ use health::*;
 use process::*;
 pub use terminal::open_terminal_for_service;
 use terminal::terminal_env_pairs;
+#[allow(unused_imports)]
+pub use terminal_session::{
+    decode_terminal_protocol_message, encode_terminal_protocol_message,
+    send_terminal_client_message, terminal_session_snapshot, TerminalClientMessage, TerminalFrame,
+    TerminalKeyAction, TerminalMods, TerminalMouseKind, TerminalServerMessage,
+    TERMINAL_BACKEND_VERSION,
+};
 use vite::*;
 
 const MAX_LOG_LINES: usize = 2_000;
@@ -41,10 +49,12 @@ const RUNTIME_PID_REGISTRY_FILE: &str = "runtime-pids.json";
 const RUNTIME_LOG_META_REGISTRY_FILE: &str = "runtime-log-meta.json";
 const RUNTIME_LOGS_DIR: &str = "runtime-logs";
 const RUNTIME_INPUTS_DIR: &str = "runtime-inputs";
+const RUNTIME_TERMINALS_DIR: &str = "runtime-terminals";
 const RUNTIME_PTY_SUBCOMMAND: &str = "__runtime_pty_runner";
 const RUNTIME_ATTACH_SUBCOMMAND: &str = "__runtime_attach_bridge";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ServiceRuntimeState {
     Stopped,
     Starting,
@@ -69,6 +79,7 @@ struct RunningService {
     child: Child,
     stdin: Option<ChildStdin>,
     input_path: Option<PathBuf>,
+    terminal_control_path: Option<PathBuf>,
     started_at: SystemTime,
     ports: Vec<ServicePortConfig>,
     host: String,
@@ -95,7 +106,28 @@ struct RuntimePidEntry {
     workdir: String,
     #[serde(default)]
     input_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_control_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_backend_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_cols: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_rows: Option<u16>,
     recorded_at: u64,
+}
+
+struct RuntimePidRememberInput<'a> {
+    project_name: &'a str,
+    service_name: &'a str,
+    snapshot: &'a ServiceRuntimeSnapshot,
+    process_group_leader: bool,
+    command: &'a str,
+    workdir: &'a str,
+    input_path: Option<&'a Path>,
+    terminal_control_path: Option<&'a Path>,
+    terminal_cols: Option<u16>,
+    terminal_rows: Option<u16>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -148,6 +180,7 @@ struct RuntimePtyRunnerArgs {
     command: String,
     log_file: PathBuf,
     input_path: PathBuf,
+    terminal_control_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +220,7 @@ fn parse_runtime_pty_runner_args(args: &[String]) -> Result<RuntimePtyRunnerArgs
     let mut command = None::<String>;
     let mut log_file = None::<PathBuf>;
     let mut input_path = None::<PathBuf>;
+    let mut terminal_control_path = None::<PathBuf>;
 
     let mut i = 1_usize;
     while i < args.len() {
@@ -199,6 +233,7 @@ fn parse_runtime_pty_runner_args(args: &[String]) -> Result<RuntimePtyRunnerArgs
             "--command" => command = Some(next.clone()),
             "--log-file" => log_file = Some(PathBuf::from(next)),
             "--input-fifo" => input_path = Some(PathBuf::from(next)),
+            "--terminal-socket" => terminal_control_path = Some(PathBuf::from(next)),
             _ => return Err(format!("Unknown runtime PTY runner argument '{flag}'.")),
         }
         i += 2;
@@ -209,6 +244,7 @@ fn parse_runtime_pty_runner_args(args: &[String]) -> Result<RuntimePtyRunnerArgs
         command: command.ok_or_else(|| "Missing --command.".to_string())?,
         log_file: log_file.ok_or_else(|| "Missing --log-file.".to_string())?,
         input_path: input_path.ok_or_else(|| "Missing --input-fifo.".to_string())?,
+        terminal_control_path,
     })
 }
 
@@ -250,12 +286,62 @@ fn run_runtime_pty_runner(args: RuntimePtyRunnerArgs) -> Result<i32, String> {
         ));
     }
 
+    if let Some(terminal_control_path) = args.terminal_control_path.as_ref() {
+        match terminal_session::run_terminal_session(terminal_session::TerminalSessionArgs {
+            workdir: args.workdir.clone(),
+            command: args.command.clone(),
+            log_file: args.log_file.clone(),
+            input_path: args.input_path.clone(),
+            control_path: terminal_control_path.clone(),
+            cols: 80,
+            rows: 24,
+            cell_width_px: 9,
+            cell_height_px: 18,
+        }) {
+            Ok(exit_code) => return Ok(exit_code),
+            Err(err) if !err.service_started => {
+                remove_service_terminal_endpoint(terminal_control_path);
+                append_runtime_runner_warning(
+                    &args.log_file,
+                    &format!(
+                        "Integrated terminal unavailable; falling back to legacy PTY runner: {}",
+                        err.message
+                    ),
+                );
+                eprintln!("Loopbox runtime PTY runner warning: {}", err.message);
+            }
+            Err(err) => {
+                append_runtime_runner_warning(
+                    &args.log_file,
+                    &format!(
+                        "Integrated terminal session stopped unexpectedly: {}",
+                        err.message
+                    ),
+                );
+                return Err(err.message);
+            }
+        }
+    }
+
     crate::platform::runtime::run_pty_child(
         &args.command,
         &args.workdir,
         &args.log_file,
         &args.input_path,
     )
+}
+
+fn append_runtime_runner_warning(log_file: &Path, message: &str) {
+    if let Some(parent) = log_file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file)
+    {
+        let _ = writeln!(file, "[loopbox] {message}");
+    }
 }
 
 fn run_runtime_attach_bridge(args: RuntimeAttachBridgeArgs) -> Result<i32, String> {
@@ -368,6 +454,9 @@ pub fn cleanup_stale_runtime_processes() -> Result<usize, String> {
             if let Some(path) = &running.input_path {
                 remove_service_input_endpoint(path);
             }
+            if let Some(path) = &running.terminal_control_path {
+                remove_service_terminal_endpoint(path);
+            }
         }
         keep
     });
@@ -401,7 +490,7 @@ pub fn start_service(
     project_name: &str,
     service_name: &str,
 ) -> Result<ServiceRuntimeSnapshot, String> {
-    let _ = sync_reverse_proxy(config);
+    let _ = sync_reverse_proxy_sidecar(config);
 
     let project = config
         .projects
@@ -550,12 +639,29 @@ pub fn start_service(
     }
 
     let input_path = service_input_fifo_path(project_name, service_name);
+    let terminal_control_path = if integrated_terminal_enabled_for_service(&service) {
+        Some(service_terminal_socket_path(project_name, service_name))
+    } else {
+        None
+    };
     prepare_service_input_fifo(&input_path)?;
+    if let Some(path) = terminal_control_path.as_ref() {
+        prepare_service_terminal_socket_path(path)?;
+    }
 
-    let mut child = match spawn_service_process(config, project_name, &service, Some(&input_path)) {
+    let mut child = match spawn_service_process(
+        config,
+        project_name,
+        &service,
+        Some(&input_path),
+        terminal_control_path.as_deref(),
+    ) {
         Ok(child) => child,
         Err(err) => {
             remove_service_input_endpoint(&input_path);
+            if let Some(path) = terminal_control_path.as_ref() {
+                remove_service_terminal_endpoint(path);
+            }
             return Err(err);
         }
     };
@@ -582,6 +688,7 @@ pub fn start_service(
             child,
             stdin,
             input_path: Some(input_path.clone()),
+            terminal_control_path: terminal_control_path.clone(),
             started_at,
             ports: configured_ports,
             host,
@@ -590,15 +697,18 @@ pub fn start_service(
         },
     );
     store.history.insert(key, snapshot.clone());
-    if let Err(err) = remember_runtime_pid(
+    if let Err(err) = remember_runtime_pid(RuntimePidRememberInput {
         project_name,
         service_name,
-        &snapshot,
-        crate::platform::runtime::supports_process_groups(),
-        &service.command,
-        &service.workdir,
-        Some(&input_path),
-    ) {
+        snapshot: &snapshot,
+        process_group_leader: crate::platform::runtime::supports_process_groups(),
+        command: &service.command,
+        workdir: &service.workdir,
+        input_path: Some(&input_path),
+        terminal_control_path: terminal_control_path.as_deref(),
+        terminal_cols: Some(80),
+        terminal_rows: Some(24),
+    }) {
         eprintln!("Loopbox runtime pid registry warning: {err}");
     }
 
@@ -659,6 +769,9 @@ pub fn stop_service(
         if let Some(path) = &running.input_path {
             remove_service_input_endpoint(path);
         }
+        if let Some(path) = &running.terminal_control_path {
+            remove_service_terminal_endpoint(path);
+        }
         let _ = forget_runtime_pid(&key);
         return Ok(snapshot);
     }
@@ -698,6 +811,9 @@ pub fn stop_service(
             store.history.insert(key.clone(), snapshot.clone());
             if let Some(path) = &entry.input_path {
                 remove_service_input_endpoint(Path::new(path));
+            }
+            if let Some(path) = &entry.terminal_control_path {
+                remove_service_terminal_endpoint(Path::new(path));
             }
             let _ = forget_runtime_pid(&key);
             return Ok(snapshot);
@@ -752,7 +868,7 @@ pub fn send_service_input(
     }
 
     let key = runtime_key(project_name, service_name);
-    let running_input_path = {
+    let running_endpoint = {
         let mut store = runtime_store()
             .lock()
             .map_err(|_| "Runtime store lock poisoned.".to_string())?;
@@ -768,6 +884,17 @@ pub fn send_service_input(
                     return Err(format!(
                         "Failed to inspect runtime status for '{service_name}' in project '{project_name}': {err}"
                     ))
+                }
+            }
+            if let Some(path) = &running.terminal_control_path {
+                if path.exists() {
+                    return terminal_session::send_terminal_client_message_to_path(
+                        path,
+                        &TerminalClientMessage::Paste {
+                            text: input.to_string(),
+                        },
+                    )
+                    .map(|_| ());
                 }
             }
             if let Some(path) = &running.input_path {
@@ -791,11 +918,23 @@ pub fn send_service_input(
         }
     };
 
-    if let Some(path) = running_input_path {
+    if let Some(path) = running_endpoint {
         return write_service_input_endpoint(&path, input, service_name);
     }
 
     if let Some(entry) = alive_runtime_pid_entry(&key)? {
+        if let Some(path) = &entry.terminal_control_path {
+            let path = Path::new(path);
+            if path.exists() {
+                return terminal_session::send_terminal_client_message_to_path(
+                    path,
+                    &TerminalClientMessage::Paste {
+                        text: input.to_string(),
+                    },
+                )
+                .map(|_| ());
+            }
+        }
         if let Some(path) = &entry.input_path {
             return write_service_input_endpoint(Path::new(path), input, service_name);
         }
@@ -814,10 +953,12 @@ pub fn service_input_attached(project_name: &str, service_name: &str) -> Result<
             .map_err(|_| "Runtime store lock poisoned.".to_string())?;
         if let Some(running) = store.running.get_mut(&key) {
             return match running.child.try_wait() {
-                Ok(None) => Ok(
-                    running.input_path.as_ref().is_some_and(|path| path.exists())
-                        || running.stdin.is_some(),
-                ),
+                Ok(None) => Ok(running
+                    .terminal_control_path
+                    .as_ref()
+                    .is_some_and(|path| path.exists())
+                    || running.input_path.as_ref().is_some_and(|path| path.exists())
+                    || running.stdin.is_some()),
                 Ok(Some(_)) => Ok(false),
                 Err(err) => Err(format!(
                     "Failed to inspect runtime status for '{service_name}' in project '{project_name}': {err}"
@@ -828,7 +969,40 @@ pub fn service_input_attached(project_name: &str, service_name: &str) -> Result<
 
     match alive_runtime_pid_entry(&key)? {
         Some(entry) => Ok(entry
-            .input_path
+            .terminal_control_path
+            .as_ref()
+            .is_some_and(|path| Path::new(path).exists())
+            || entry
+                .input_path
+                .as_ref()
+                .is_some_and(|path| Path::new(path).exists())),
+        None => Ok(false),
+    }
+}
+
+pub fn service_terminal_attached(project_name: &str, service_name: &str) -> Result<bool, String> {
+    let key = runtime_key(project_name, service_name);
+    {
+        let mut store = runtime_store()
+            .lock()
+            .map_err(|_| "Runtime store lock poisoned.".to_string())?;
+        if let Some(running) = store.running.get_mut(&key) {
+            return match running.child.try_wait() {
+                Ok(None) => Ok(running
+                    .terminal_control_path
+                    .as_ref()
+                    .is_some_and(|path| path.exists())),
+                Ok(Some(_)) => Ok(false),
+                Err(err) => Err(format!(
+                    "Failed to inspect runtime status for '{service_name}' in project '{project_name}': {err}"
+                )),
+            };
+        }
+    }
+
+    match alive_runtime_pid_entry(&key)? {
+        Some(entry) => Ok(entry
+            .terminal_control_path
             .as_ref()
             .is_some_and(|path| Path::new(path).exists())),
         None => Ok(false),
@@ -1441,30 +1615,32 @@ fn begin_service_operation(key: &str) -> Result<RuntimeServiceOpGuard, String> {
     })
 }
 
-fn remember_runtime_pid(
-    project_name: &str,
-    service_name: &str,
-    snapshot: &ServiceRuntimeSnapshot,
-    process_group_leader: bool,
-    command: &str,
-    workdir: &str,
-    input_path: Option<&Path>,
-) -> Result<(), String> {
-    let Some(pid) = snapshot.pid else {
+fn remember_runtime_pid(input: RuntimePidRememberInput<'_>) -> Result<(), String> {
+    let Some(pid) = input.snapshot.pid else {
         return Ok(());
     };
-    let key = runtime_key(project_name, service_name);
+    let key = runtime_key(input.project_name, input.service_name);
     let mut registry = load_runtime_pid_registry()?;
     registry.entries.retain(|entry| entry.key != key);
     registry.entries.push(RuntimePidEntry {
         key,
-        project: project_name.to_string(),
-        service: service_name.to_string(),
+        project: input.project_name.to_string(),
+        service: input.service_name.to_string(),
         pid,
-        process_group_leader,
-        command: command.to_string(),
-        workdir: workdir.to_string(),
-        input_path: input_path.map(|path| path.to_string_lossy().to_string()),
+        process_group_leader: input.process_group_leader,
+        command: input.command.to_string(),
+        workdir: input.workdir.to_string(),
+        input_path: input
+            .input_path
+            .map(|path| path.to_string_lossy().to_string()),
+        terminal_control_path: input
+            .terminal_control_path
+            .map(|path| path.to_string_lossy().to_string()),
+        terminal_backend_version: input
+            .terminal_control_path
+            .map(|_| TERMINAL_BACKEND_VERSION.to_string()),
+        terminal_cols: input.terminal_cols,
+        terminal_rows: input.terminal_rows,
         recorded_at: unix_timestamp(SystemTime::now()),
     });
     save_runtime_pid_registry(&registry)
@@ -1478,12 +1654,16 @@ fn forget_runtime_pid(key: &str) -> Result<(), String> {
 
     let mut registry = load_runtime_pid_registry()?;
     let mut removed_input_paths = Vec::new();
+    let mut removed_terminal_paths = Vec::new();
     let before = registry.entries.len();
     registry.entries.retain(|entry| {
         let remove = entry.key == key;
         if remove {
             if let Some(path) = &entry.input_path {
                 removed_input_paths.push(path.clone());
+            }
+            if let Some(path) = &entry.terminal_control_path {
+                removed_terminal_paths.push(path.clone());
             }
         }
         !remove
@@ -1493,6 +1673,9 @@ fn forget_runtime_pid(key: &str) -> Result<(), String> {
         for input_path in removed_input_paths {
             remove_service_input_endpoint(Path::new(&input_path));
         }
+        for terminal_path in removed_terminal_paths {
+            remove_service_terminal_endpoint(Path::new(&terminal_path));
+        }
         return Ok(());
     }
     if registry.entries.len() != before {
@@ -1500,6 +1683,9 @@ fn forget_runtime_pid(key: &str) -> Result<(), String> {
     }
     for input_path in removed_input_paths {
         remove_service_input_endpoint(Path::new(&input_path));
+    }
+    for terminal_path in removed_terminal_paths {
+        remove_service_terminal_endpoint(Path::new(&terminal_path));
     }
     Ok(())
 }
@@ -1532,6 +1718,23 @@ fn runtime_inputs_dir_path() -> PathBuf {
     base.join(RUNTIME_INPUTS_DIR)
 }
 
+fn runtime_terminals_dir_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        let uid = unsafe { libc::getuid() };
+        PathBuf::from("/tmp").join(format!("loopbox-{uid}-{RUNTIME_TERMINALS_DIR}"))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let base = runtime_pid_registry_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join(RUNTIME_TERMINALS_DIR)
+    }
+}
+
 fn service_log_file_path(project_name: &str, service_name: &str) -> PathBuf {
     runtime_logs_dir_path().join(format!(
         "{}__{}.log",
@@ -1546,6 +1749,14 @@ fn service_input_fifo_path(project_name: &str, service_name: &str) -> PathBuf {
         sanitize_runtime_name(project_name),
         sanitize_runtime_name(service_name)
     ))
+}
+
+fn service_terminal_socket_path(project_name: &str, service_name: &str) -> PathBuf {
+    let key = format!(
+        "{}::{project_name}::{service_name}",
+        runtime_pid_registry_path().display()
+    );
+    runtime_terminals_dir_path().join(format!("{:016x}.sock", stable_runtime_hash(&key)))
 }
 
 fn resolve_runtime_pid_registry_path() -> PathBuf {
@@ -1610,6 +1821,15 @@ fn sanitize_runtime_name(input: &str) -> String {
     }
 }
 
+fn stable_runtime_hash(input: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn prepare_service_log_file(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1661,6 +1881,21 @@ fn remove_service_input_endpoint(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+fn prepare_service_terminal_socket_path(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    if path.exists() {
+        remove_service_terminal_endpoint(path);
+    }
+    Ok(())
+}
+
+fn remove_service_terminal_endpoint(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
 fn build_pty_wrapped_launch_command(
     launch_command: &str,
     log_file: &Path,
@@ -1681,6 +1916,7 @@ fn spawn_service_process_via_native_pty_runner(
     launch_command: &str,
     log_file: &Path,
     input_path: &Path,
+    terminal_control_path: Option<&Path>,
     merged_env_values: &BTreeMap<String, String>,
     vite_allowed_hosts: Option<&str>,
 ) -> Result<Child, String> {
@@ -1701,6 +1937,9 @@ fn spawn_service_process_via_native_pty_runner(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(path) = terminal_control_path {
+        command.arg("--terminal-socket").arg(path);
+    }
 
     crate::platform::runtime::configure_process_group(&mut command);
 
@@ -1968,6 +2207,9 @@ fn prune_runtime_pid_registry() -> Result<(Vec<RuntimePidEntry>, usize), String>
             if let Some(path) = &entry.input_path {
                 remove_service_input_endpoint(Path::new(path));
             }
+            if let Some(path) = &entry.terminal_control_path {
+                remove_service_terminal_endpoint(Path::new(path));
+            }
             removed_entries += 1;
             continue;
         }
@@ -1982,6 +2224,9 @@ fn prune_runtime_pid_registry() -> Result<(Vec<RuntimePidEntry>, usize), String>
         } else {
             if let Some(path) = &entry.input_path {
                 remove_service_input_endpoint(Path::new(path));
+            }
+            if let Some(path) = &entry.terminal_control_path {
+                remove_service_terminal_endpoint(Path::new(path));
             }
             removed_entries += 1;
         }
@@ -2030,11 +2275,38 @@ fn resolve_runtime_input_path_for_key(key: &str) -> Result<Option<PathBuf>, Stri
     Ok(alive_runtime_pid_entry(key)?.and_then(|entry| entry.input_path.map(PathBuf::from)))
 }
 
+fn resolve_runtime_terminal_path_for_key(key: &str) -> Result<Option<PathBuf>, String> {
+    {
+        let mut store = runtime_store()
+            .lock()
+            .map_err(|_| "Runtime store lock poisoned.".to_string())?;
+        if let Some(running) = store.running.get_mut(key) {
+            match running.child.try_wait() {
+                Ok(None) => {
+                    if let Some(path) = &running.terminal_control_path {
+                        return Ok(Some(path.clone()));
+                    }
+                }
+                Ok(Some(_)) => {}
+                Err(err) => {
+                    return Err(format!(
+                        "Failed to inspect runtime status for '{key}': {err}"
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(alive_runtime_pid_entry(key)?
+        .and_then(|entry| entry.terminal_control_path.map(PathBuf::from)))
+}
+
 fn spawn_service_process(
     config: &LoopboxConfig,
     project_name: &str,
     service: &ServiceConfig,
     input_path: Option<&Path>,
+    terminal_control_path: Option<&Path>,
 ) -> Result<Child, String> {
     let project = config
         .projects
@@ -2071,6 +2343,21 @@ fn spawn_service_process(
 
     let launch_command = apply_bind_hints_to_command(service, &project.ip);
     let log_file = service_log_file_path(project_name, &service.name);
+    if let (Some(input_path), Some(terminal_control_path)) = (input_path, terminal_control_path) {
+        return spawn_service_process_via_native_pty_runner(
+            config,
+            project_name,
+            project.services.as_slice(),
+            service,
+            &launch_command,
+            &log_file,
+            input_path,
+            Some(terminal_control_path),
+            &merged_env.values,
+            vite_allowed_hosts.as_deref(),
+        );
+    }
+
     if let Some(input_path) = input_path {
         if command_requires_terminal_tty(service) {
             return spawn_service_process_via_native_pty_runner(
@@ -2081,6 +2368,7 @@ fn spawn_service_process(
                 &launch_command,
                 &log_file,
                 input_path,
+                None,
                 &merged_env.values,
                 vite_allowed_hosts.as_deref(),
             );
@@ -2150,6 +2438,22 @@ fn command_is_vite_like(service: &ServiceConfig) -> bool {
 fn command_requires_terminal_tty(service: &ServiceConfig) -> bool {
     let lower = service.command.to_lowercase();
     lower.contains("expo") || lower.contains("react-native") || lower.contains("metro")
+}
+
+fn integrated_terminal_enabled_for_service(service: &ServiceConfig) -> bool {
+    if service.runtime != ServiceRuntimeKind::Process {
+        return false;
+    }
+    #[cfg(test)]
+    {
+        // Unit tests run inside Rust's test harness binary, so spawning
+        // current_exe as the persistent helper does not enter Loopbox main().
+        command_requires_terminal_tty(service)
+    }
+    #[cfg(not(test))]
+    {
+        cfg!(target_os = "macos")
+    }
 }
 
 fn primary_service_port(service: &ServiceConfig) -> Option<u16> {

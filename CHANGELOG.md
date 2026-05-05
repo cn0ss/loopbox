@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Added persisted service resource metrics for CPU, memory, process counts, and container stats, including Runtime UI summaries, per-project trend cards, Settings controls, and Agent API `/resources` output.
+- Added a headless Agent API server mode for CI/smoke validation without launching the desktop UI.
+- Added Agent API Doctor and service input coverage to the OpenAPI schema and smoke workflow, including auth-enabled checks.
+- Added Agent API resource metrics coverage to the smoke workflow.
+- Added container runtime hardening around Docker availability, command construction, stopped container replacement, logs, and removal handling.
+
+### Changed
+- Resource metric disk reads now use bounded, newest-first/window-filtered readers instead of loading every persisted sample on hot paths.
+- Agent API project mutations now skip reverse proxy sync when the config has no routable service ports or proxy endpoints.
+- Docker sandbox port-reuse smoke now skips cleanly when required loopback aliases are missing.
+- Sandbox preflight now flags duplicate service ports on the target sandbox IP before creation.
+- Sandbox preflight now validates project config without writing agent guidance files.
+- Container services no longer show process terminal/run controls in the sandbox detail runtime actions.
+
 ## v0.3.1 - 2026-05-05
 
 ### Changed

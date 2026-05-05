@@ -13,6 +13,10 @@ pub(super) fn SettingsFeatureSections(
     mut proxy_retention_days_input: Signal<String>,
     mut proxy_max_storage_mb_input: Signal<String>,
     mut proxy_writer_queue_size_input: Signal<String>,
+    mut resource_metrics_enabled_input: Signal<bool>,
+    mut resource_metrics_sample_interval_input: Signal<String>,
+    mut resource_metrics_retention_days_input: Signal<String>,
+    mut resource_metrics_max_storage_mb_input: Signal<String>,
     mut config: Signal<LoopboxConfig>,
     mut notice: Signal<Option<Notice>>,
     pending_auto_apply: Signal<Option<String>>,
@@ -23,6 +27,16 @@ pub(super) fn SettingsFeatureSections(
     let support_form_valid = !support_email_input().trim().is_empty()
         && !support_subject_input().trim().is_empty()
         && !support_text_input().trim().is_empty();
+    let resource_metrics_stats = loopbox::resource_metrics_disk_stats();
+    let resource_metrics_storage_label = format!(
+        "{} file(s), {}",
+        resource_metrics_stats.total_files,
+        crate::app::runtime_view::format_memory_bytes(Some(resource_metrics_stats.total_bytes))
+    );
+    let resource_metrics_dropped_label = format!(
+        "{} dropped sample(s)",
+        resource_metrics_stats.dropped_samples
+    );
 
     rsx! {
         // ── Support ──────────────────────────────────────
@@ -397,6 +411,130 @@ pub(super) fn SettingsFeatureSections(
                             }
                         },
                         "Save Storage & Retention"
+                    }
+                }
+            }
+        }
+
+        // ── Resource Metrics ──────────────────────────────
+        div { class: "settings-section",
+            div { class: "settings-section-head",
+                span { class: "settings-section-icon", "▥" }
+                div {
+                    p { class: "settings-section-title", "Resource Metrics" }
+                    p { class: "settings-section-desc", "Sampling and storage for service CPU and memory trends." }
+                }
+            }
+            div { class: "settings-section-body",
+                div { class: "settings-toggles",
+                    div { class: "settings-toggle-row settings-toggle-row-last",
+                        div { class: "settings-toggle-info",
+                            span { class: "settings-toggle-label", "Collect Metrics" }
+                            span { class: "settings-toggle-desc", "Sample active services while Loopbox or the Agent API is running." }
+                        }
+                        button {
+                            class: if resource_metrics_enabled_input() {
+                                "toggle-pill toggle-pill-on"
+                            } else {
+                                "toggle-pill"
+                            },
+                            onclick: move |_| {
+                                resource_metrics_enabled_input.set(!resource_metrics_enabled_input());
+                            },
+                            span { class: "toggle-pill-dot" }
+                            if resource_metrics_enabled_input() { "Enabled" } else { "Disabled" }
+                        }
+                    }
+                }
+                div { class: "settings-sub-divider" }
+                div { class: "settings-fields-3",
+                    label { class: "field",
+                        span { class: "field-label", "Sample Interval (sec)" }
+                        input {
+                            class: "field-input",
+                            value: "{resource_metrics_sample_interval_input}",
+                            placeholder: "5",
+                            oninput: move |evt| resource_metrics_sample_interval_input.set(evt.value()),
+                        }
+                    }
+                    label { class: "field",
+                        span { class: "field-label", "Retention (days)" }
+                        input {
+                            class: "field-input",
+                            value: "{resource_metrics_retention_days_input}",
+                            placeholder: "7",
+                            oninput: move |evt| resource_metrics_retention_days_input.set(evt.value()),
+                        }
+                    }
+                    label { class: "field",
+                        span { class: "field-label", "Max Storage (MB)" }
+                        input {
+                            class: "field-input",
+                            value: "{resource_metrics_max_storage_mb_input}",
+                            placeholder: "250",
+                            oninput: move |evt| resource_metrics_max_storage_mb_input.set(evt.value()),
+                        }
+                    }
+                }
+                p { class: "settings-hint",
+                    "Interval: 2–60 seconds. Retention: 1–90 days. Storage: 25–5,000 MB. Current usage: {resource_metrics_storage_label}; {resource_metrics_dropped_label}."
+                }
+                div { class: "settings-save-row",
+                    button {
+                        class: "btn btn-primary",
+                        onclick: move |_| {
+                            let enabled = resource_metrics_enabled_input();
+                            let interval_raw = resource_metrics_sample_interval_input();
+                            let retention_raw = resource_metrics_retention_days_input();
+                            let storage_raw = resource_metrics_max_storage_mb_input();
+
+                            let parsed_interval = match interval_raw.trim().parse::<u64>() {
+                                Ok(value) if value > 0 => Ok(value.clamp(2, 60)),
+                                Ok(_) => Err("Resource sample interval must be greater than 0.".to_string()),
+                                Err(_) => Err("Resource sample interval must be a number between 2 and 60.".to_string()),
+                            };
+                            let parsed_retention = match retention_raw.trim().parse::<u16>() {
+                                Ok(value) if value > 0 => Ok(value.clamp(1, 90)),
+                                Ok(_) => Err("Resource retention days must be greater than 0.".to_string()),
+                                Err(_) => Err("Resource retention days must be a number between 1 and 90.".to_string()),
+                            };
+                            let parsed_storage = match storage_raw.trim().parse::<usize>() {
+                                Ok(value) if value > 0 => Ok(value.clamp(25, 5_000)),
+                                Ok(_) => Err("Resource max storage must be greater than 0.".to_string()),
+                                Err(_) => Err("Resource max storage must be a number between 25 and 5000.".to_string()),
+                            };
+
+                            let update_result = match (parsed_interval, parsed_retention, parsed_storage) {
+                                (Ok(interval), Ok(retention), Ok(storage)) => {
+                                    config.with_mut(|cfg| {
+                                        cfg.global.resource_metrics.enabled = enabled;
+                                        cfg.global.resource_metrics.sample_interval_secs = interval;
+                                        cfg.global.resource_metrics.retention_days = retention;
+                                        cfg.global.resource_metrics.max_storage_mb = storage;
+                                    });
+                                    resource_metrics_sample_interval_input.set(interval.to_string());
+                                    resource_metrics_retention_days_input.set(retention.to_string());
+                                    resource_metrics_max_storage_mb_input.set(storage.to_string());
+                                    Ok(())
+                                }
+                                (Err(err), _, _) => Err(err),
+                                (_, Err(err), _) => Err(err),
+                                (_, _, Err(err)) => Err(err),
+                            };
+
+                            match update_result {
+                                Ok(()) => save_settings_group(
+                                    config,
+                                    notice,
+                                    pending_auto_apply,
+                                    "Resource metrics settings updated.",
+                                    None,
+                                    false,
+                                ),
+                                Err(err) => notice.set(Some(Notice::error(err))),
+                            }
+                        },
+                        "Save Resource Metrics"
                     }
                 }
             }

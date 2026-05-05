@@ -1188,15 +1188,11 @@ pub(super) fn build_wizard_preflight(
         }),
     }
 
-    let mut candidate = config.clone();
     let mut predicted_ip = None::<String>;
-    let config_result = loopbox::add_project(&mut candidate, form);
+    let config_result = loopbox::preview_add_project(config, form);
     match config_result {
-        Ok(project_name) => {
-            predicted_ip = candidate
-                .projects
-                .get(&project_name)
-                .map(|project| project.ip.clone());
+        Ok((_project_name, project)) => {
+            predicted_ip = Some(project.ip);
             checks.push(WizardPreflightCheck {
                 title: "Configuration validity".to_string(),
                 detail: "Project name, IP, services, and hostnames are valid.".to_string(),
@@ -1244,6 +1240,24 @@ pub(super) fn build_wizard_preflight(
         });
     }
 
+    if form.services.iter().any(|service| {
+        !service.name.trim().is_empty() && service.runtime.trim().eq_ignore_ascii_case("container")
+    }) {
+        if let Some(message) = loopbox::docker_runtime_unavailable_message() {
+            checks.push(WizardPreflightCheck {
+                title: "Docker runtime".to_string(),
+                detail: message,
+                ok: false,
+            });
+        } else {
+            checks.push(WizardPreflightCheck {
+                title: "Docker runtime".to_string(),
+                detail: "Docker CLI and daemon are available for container services.".to_string(),
+                ok: true,
+            });
+        }
+    }
+
     let ip = predicted_ip.unwrap_or_else(|| form.ip.trim().to_string());
     if ip.trim().is_empty() {
         checks.push(WizardPreflightCheck {
@@ -1275,6 +1289,53 @@ pub(super) fn build_wizard_preflight(
             checks.push(WizardPreflightCheck {
                 title: "Port availability".to_string(),
                 detail: format!("Already in use: {}", busy_ports.join(", ")),
+                ok: false,
+            });
+        }
+    }
+
+    if ip.trim().is_empty() {
+        checks.push(WizardPreflightCheck {
+            title: "Port configuration".to_string(),
+            detail: "Skipped (could not determine target IP yet).".to_string(),
+            ok: true,
+        });
+    } else {
+        let mut owners_by_port = BTreeMap::<u16, Vec<String>>::new();
+        for service in form
+            .services
+            .iter()
+            .filter(|service| !service.name.trim().is_empty())
+        {
+            for port in service_entry_configured_ports(service) {
+                owners_by_port
+                    .entry(port)
+                    .or_default()
+                    .push(service.name.trim().to_string());
+            }
+        }
+
+        let duplicates = owners_by_port
+            .into_iter()
+            .filter_map(|(port, owners)| {
+                if owners.len() > 1 {
+                    Some(format!("{ip}:{port} ({})", owners.join(", ")))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if duplicates.is_empty() {
+            checks.push(WizardPreflightCheck {
+                title: "Port configuration".to_string(),
+                detail: format!("No duplicate configured ports on {ip}."),
+                ok: true,
+            });
+        } else {
+            checks.push(WizardPreflightCheck {
+                title: "Port configuration".to_string(),
+                detail: format!("Duplicate bindings: {}", duplicates.join(", ")),
                 ok: false,
             });
         }
@@ -1427,118 +1488,6 @@ pub(super) fn build_discovered_services(project_dir: &str) -> Result<Vec<Service
     Ok(services)
 }
 
-fn build_compose_discovered_services(
-    project_dir: &str,
-    compose_services: &[loopbox::ComposeServiceSuggestion],
-) -> Vec<ServiceEntry> {
-    let docker_management_enabled = true;
-    let mut used_names = HashSet::new();
-    let mut services = Vec::new();
-
-    for compose_service in compose_services {
-        let base_name = sanitize_identifier(&compose_service.service_name);
-        let service_name = unique_service_name(base_name, &mut used_names);
-
-        let mut entry = wizard_blank_service_entry_base();
-        entry.name = service_name.clone();
-        entry.workdir = project_dir.to_string();
-        entry.env_files = compose_service.env_files.join(",");
-        entry.depends_on = compose_service.depends_on.join(",");
-        entry.autostart = false;
-
-        let mut port_rows = compose_service
-            .ports
-            .iter()
-            .filter(|port| !port.protocol.eq_ignore_ascii_case("udp"))
-            .map(|port| ServicePortEntry {
-                port: port.published_port.to_string(),
-                protocol: compose_proxy_protocol(&service_name, port.published_port).to_string(),
-                health_path: String::new(),
-            })
-            .collect::<Vec<_>>();
-        if port_rows.is_empty() {
-            port_rows.push(blank_service_port_entry());
-        }
-        entry.ports = port_rows;
-        sync_service_entry_primary_port(&mut entry);
-
-        let image = compose_service
-            .image
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_string();
-
-        if docker_management_enabled && !image.is_empty() {
-            entry.runtime = "container".to_string();
-            entry.command.clear();
-            entry.container_image = image;
-            entry.container_args = compose_service.command.join("\n");
-            entry.container_env = compose_service.env.join("\n");
-            entry.container_volumes = compose_service.volumes.join("\n");
-            entry.container_auto_remove = true;
-        } else {
-            entry.runtime = "process".to_string();
-            entry.command = compose_service_process_command(compose_service);
-            entry.container_image.clear();
-            entry.container_args.clear();
-            entry.container_env.clear();
-            entry.container_volumes.clear();
-            entry.container_auto_remove = false;
-        }
-
-        services.push(entry);
-    }
-
-    services
-}
-
-fn compose_service_process_command(service: &loopbox::ComposeServiceSuggestion) -> String {
-    let service_name = service.service_name.trim();
-    if service_name.is_empty() {
-        return "docker compose up".to_string();
-    }
-    if service.uses_build {
-        format!("docker compose up --build {service_name}")
-    } else {
-        format!("docker compose up {service_name}")
-    }
-}
-
-fn compose_proxy_protocol(service_name: &str, port: u16) -> &'static str {
-    let lowered = service_name.to_ascii_lowercase();
-    if lowered.contains("grpc") || matches!(port, 50051 | 50052 | 6565) {
-        return "grpc_h2c";
-    }
-    if lowered.contains("web")
-        || lowered.contains("front")
-        || lowered.contains("ui")
-        || lowered.contains("api")
-        || lowered.contains("gateway")
-        || matches!(
-            port,
-            80 | 81
-                | 3000
-                | 3001
-                | 4173
-                | 4200
-                | 5000
-                | 5173
-                | 8000
-                | 8080
-                | 8081
-                | 8888
-                | 9000
-                | 1885
-                | 1886
-                | 1887
-        )
-    {
-        return "http1";
-    }
-    "tcp_passthrough"
-}
-
 pub(super) fn service_name_from_suggestion(suggestion: &loopbox::DiscoverySuggestion) -> String {
     let mut candidate = suggestion
         .package_name
@@ -1648,4 +1597,61 @@ pub(super) fn suggest_service_port(
     }
     used.insert(fallback);
     Some(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn preflight_rejects_duplicate_service_ports_on_project_ip() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let project_dir = std::env::temp_dir().join(format!("loopbox-wizard-preflight-{unique}"));
+        fs::create_dir_all(&project_dir).expect("project dir");
+
+        let service = |name: &str| ServiceEntry {
+            name: name.to_string(),
+            ports: vec![ServicePortEntry {
+                port: "8080".to_string(),
+                protocol: "http1".to_string(),
+                health_path: String::new(),
+            }],
+            port: "8080".to_string(),
+            protocol: "http1".to_string(),
+            runtime: "process".to_string(),
+            command: "python3 -m http.server 8080".to_string(),
+            workdir: project_dir.to_string_lossy().to_string(),
+            env_files: String::new(),
+            depends_on: String::new(),
+            autostart: false,
+            health_path: String::new(),
+            container_image: String::new(),
+            container_args: String::new(),
+            container_env: String::new(),
+            container_volumes: String::new(),
+            container_auto_remove: false,
+        };
+        let form = AddProjectInput {
+            name: "demo".to_string(),
+            dir: project_dir.to_string_lossy().to_string(),
+            ip: "127.0.0.42".to_string(),
+            services: vec![service("api"), service("web")],
+        };
+
+        let checks = build_wizard_preflight(&form, &LoopboxConfig::default());
+        let duplicate_check = checks
+            .iter()
+            .find(|check| check.title == "Port configuration")
+            .expect("duplicate port check");
+
+        assert!(!duplicate_check.ok);
+        assert!(duplicate_check.detail.contains("127.0.0.42:8080"));
+        assert!(duplicate_check.detail.contains("api"));
+        assert!(duplicate_check.detail.contains("web"));
+    }
 }

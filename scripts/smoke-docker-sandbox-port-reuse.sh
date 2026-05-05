@@ -16,8 +16,8 @@ USAGE
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing required command: $1" >&2
-    exit 1
+    echo "SKIP: Missing optional command: $1" >&2
+    exit 0
   fi
 }
 
@@ -61,13 +61,26 @@ finally:
 PY
 }
 
+can_bind_loopback_ip() {
+  local host="$1"
+  python3 - "$host" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.bind((host, 0))
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PY
+}
+
 require_cmd docker
 require_cmd python3
-
-if ! docker info >/dev/null 2>&1; then
-  echo "Docker daemon is not reachable. Start Docker Desktop/Engine and retry." >&2
-  exit 1
-fi
 
 IMAGE="postgres:16-alpine"
 IP_A="127.0.0.61"
@@ -112,6 +125,25 @@ done
 if [[ "$IP_A" == "$IP_B" ]]; then
   echo "--ip-a and --ip-b must differ." >&2
   exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "SKIP: Docker daemon is not reachable. Start Docker Desktop/Engine to run this optional smoke." >&2
+  exit 0
+fi
+
+MISSING_ALIASES=()
+if ! can_bind_loopback_ip "$IP_A"; then
+  MISSING_ALIASES+=("$IP_A")
+fi
+if ! can_bind_loopback_ip "$IP_B"; then
+  MISSING_ALIASES+=("$IP_B")
+fi
+
+if [[ "${#MISSING_ALIASES[@]}" -gt 0 ]]; then
+  echo "SKIP: Missing loopback alias(es): ${MISSING_ALIASES[*]}." >&2
+  echo "Run Loopbox System Setup for sandboxes using these IPs, or manually add the loopback aliases, then rerun this optional smoke." >&2
+  exit 0
 fi
 
 STAMP="$(date +%s)"

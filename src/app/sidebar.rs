@@ -80,6 +80,11 @@ pub(super) fn render_sidebar(
                 }
 
                 button {
+                    class: if page == Page::Agents { "nav-link active" } else { "nav-link" },
+                    onclick: move |_| current_page.set(Page::Agents),
+                    span { class: "nav-label", "Agents" }
+                }
+                button {
                     class: if page == Page::Runtime { "nav-link active" } else { "nav-link" },
                     onclick: move |_| current_page.set(Page::Runtime),
                     span { class: "nav-label", "Runtime" }

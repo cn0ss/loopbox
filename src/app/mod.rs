@@ -2,20 +2,24 @@ mod components;
 pub(crate) mod log_window;
 pub(crate) mod models;
 mod pages;
+pub(crate) mod runtime_view;
 mod sidebar;
+pub(crate) mod terminal_window;
 mod tray;
 mod utils;
 
 use self::models::{Notice, Page, RuntimeFilter, SetupStatus};
-use self::pages::{agent_api_audit, runtime, sandboxes, settings, system};
+use self::pages::{agent_api_audit, agents, runtime, sandboxes, settings, system};
 use self::sidebar::render_sidebar;
 use self::utils::{apply_setup_result, preview_project_name, preview_service_name, preview_suffix};
 use crate::loopbox;
 use crate::loopbox::{AddProjectInput, AgentApiServerInfo, DoctorLevel, LoopboxConfig};
 use dioxus::prelude::*;
+use std::collections::BTreeMap;
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
+const PROXY_SIDECAR_REFRESH_TICKS: u64 = 5;
 
 // ── App ──
 
@@ -24,6 +28,7 @@ pub(crate) fn App() -> Element {
     // ── Core State ──
     let current_page = use_signal(|| Page::Sandboxes);
     let runtime_filter = use_signal(|| RuntimeFilter::All);
+    let runtime_search = use_signal(String::new);
     let mut config = use_signal(|| {
         loopbox::load_config().unwrap_or_else(|err| {
             eprintln!("{err}");
@@ -34,10 +39,24 @@ pub(crate) fn App() -> Element {
     let mut notice = use_signal(|| None::<Notice>);
     let mut runtime_tick = use_signal(|| 0_u64);
     let mut pending_auto_apply = use_signal(|| None::<String>);
+    let doctor_refresh = use_signal(|| 0_u64);
     use_future(move || async move {
+        let mut proxy_sidecar_tick = 0_u64;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
             runtime_tick.with_mut(|tick| *tick = tick.wrapping_add(1));
+            proxy_sidecar_tick = proxy_sidecar_tick.wrapping_add(1);
+            if proxy_sidecar_refresh_due(proxy_sidecar_tick) {
+                let cfg = config();
+                let result =
+                    tokio::task::spawn_blocking(move || loopbox::sync_reverse_proxy_sidecar(&cfg))
+                        .await
+                        .map_err(|err| format!("Reverse proxy sidecar refresh task failed: {err}"))
+                        .and_then(|result| result.map(|_| ()));
+                if let Err(err) = result {
+                    eprintln!("Loopbox reverse proxy sidecar refresh warning: {err}");
+                }
+            }
         }
     });
 
@@ -72,6 +91,46 @@ pub(crate) fn App() -> Element {
                 .await
                 .ok()
                 .and_then(Result::ok)
+        }
+    });
+    let overview_runtime_counts_resource = use_resource(move || {
+        let page = current_page();
+        let selected_name = selected_project();
+        let should_poll = page == Page::Sandboxes && selected_name.is_none();
+        let cfg = if should_poll { Some(config()) } else { None };
+        let tick = if should_poll {
+            Some(runtime_tick())
+        } else {
+            None
+        };
+        async move {
+            let Some(cfg) = cfg else {
+                return BTreeMap::new();
+            };
+            let _ = tick;
+            tokio::task::spawn_blocking(move || overview_running_counts(&cfg))
+                .await
+                .unwrap_or_default()
+        }
+    });
+    let doctor_report_resource = use_resource(move || {
+        let page = current_page();
+        let selected_name = selected_project();
+        let should_check = page == Page::Sandboxes && selected_name.is_none();
+        let cfg = if should_check { Some(config()) } else { None };
+        let refresh = if should_check {
+            Some(doctor_refresh())
+        } else {
+            None
+        };
+        async move {
+            let Some(cfg) = cfg else {
+                return Vec::new();
+            };
+            let _ = refresh;
+            tokio::task::spawn_blocking(move || loopbox::doctor_report(&cfg))
+                .await
+                .unwrap_or_default()
         }
     });
 
@@ -151,6 +210,32 @@ pub(crate) fn App() -> Element {
     });
     let proxy_max_events_input =
         use_signal(|| config.read().global.proxy_traffic.max_events.to_string());
+    let resource_metrics_enabled_input =
+        use_signal(|| config.read().global.resource_metrics.enabled);
+    let resource_metrics_sample_interval_input = use_signal(|| {
+        config
+            .read()
+            .global
+            .resource_metrics
+            .sample_interval_secs
+            .to_string()
+    });
+    let resource_metrics_retention_days_input = use_signal(|| {
+        config
+            .read()
+            .global
+            .resource_metrics
+            .retention_days
+            .to_string()
+    });
+    let resource_metrics_max_storage_mb_input = use_signal(|| {
+        config
+            .read()
+            .global
+            .resource_metrics
+            .max_storage_mb
+            .to_string()
+    });
     let agent_api_enabled_input = use_signal(|| config.read().global.agent_api.enabled);
     let agent_api_auth_enabled_input = use_signal(|| config.read().global.agent_api.auth_enabled);
     let agent_api_port_input = use_signal(|| config.read().global.agent_api.port.to_string());
@@ -168,16 +253,14 @@ pub(crate) fn App() -> Element {
     let page = current_page();
     let runtime_filter_value = runtime_filter();
 
-    // Keep the 900ms tick subscribed only for pages that need live runtime refresh.
-    if page == Page::Runtime || (page == Page::Sandboxes && selected_name.is_none()) {
-        let _ = runtime_tick();
-    }
-
     // Sync long-lived background services only when config changes.
     let sync_services = use_memo(move || {
         let cfg = config();
-        if let Err(err) = loopbox::sync_reverse_proxy(&cfg) {
-            eprintln!("Loopbox reverse proxy sync warning: {err}");
+        if let Err(err) = loopbox::sync_reverse_proxy_sidecar(&cfg) {
+            eprintln!("Loopbox reverse proxy sidecar sync warning: {err}");
+        }
+        if let Err(err) = loopbox::sync_resource_metrics_sampler(&cfg) {
+            eprintln!("Loopbox resource metrics sync warning: {err}");
         }
         loopbox::sync_agent_api_server(&cfg).ok()
     });
@@ -187,11 +270,8 @@ pub(crate) fn App() -> Element {
     let latest_release = latest_release_resource().flatten();
     let project_names: Vec<String> = config_snapshot.projects.keys().cloned().collect();
 
-    let doctor_issues = if page == Page::Sandboxes && selected_name.is_none() {
-        loopbox::doctor_report(&config_snapshot)
-    } else {
-        Vec::new()
-    };
+    let overview_running_counts = overview_runtime_counts_resource().unwrap_or_default();
+    let doctor_issues = doctor_report_resource().unwrap_or_default();
     let doctor_ok = doctor_issues.iter().all(|i| i.level == DoctorLevel::Info);
     let doctor_issue_count = doctor_issues
         .iter()
@@ -223,6 +303,19 @@ pub(crate) fn App() -> Element {
                 config.set(reloaded);
             }
         }
+    });
+    use_effect(move || {
+        let Some(current_notice) = notice() else {
+            return;
+        };
+        let dismiss_after = current_notice.dismiss_after();
+        spawn(async move {
+            tokio::time::sleep(dismiss_after).await;
+            let should_clear = notice.with(|notice| notice.as_ref() == Some(&current_notice));
+            if should_clear {
+                notice.set(None);
+            }
+        });
     });
 
     // ── Derived: Form Previews ──
@@ -367,6 +460,7 @@ pub(crate) fn App() -> Element {
                 {sandboxes::render_sandboxes_page(
                     page,
                     selected_project_data,
+                    overview_running_counts,
                     config_snapshot.clone(),
                     doctor_ok,
                     doctor_issue_count,
@@ -377,6 +471,7 @@ pub(crate) fn App() -> Element {
                     notice,
                     pending_auto_apply,
                     runtime_tick,
+                    doctor_refresh,
                     current_page,
                 )}
 
@@ -417,10 +512,21 @@ pub(crate) fn App() -> Element {
 
                 {runtime::render_runtime_page(
                     page,
+                    current_page,
                     runtime_filter_value,
                     runtime_filter,
+                    runtime_search,
                     config,
                     notice,
+                    runtime_tick,
+                )}
+
+                {agents::render_agents_page(
+                    page,
+                    config,
+                    selected_project,
+                    notice,
+                    runtime_tick,
                 )}
 
                 {agent_api_audit::render_agent_api_audit_page(
@@ -446,6 +552,10 @@ pub(crate) fn App() -> Element {
                     proxy_retention_days_input,
                     proxy_max_storage_mb_input,
                     proxy_writer_queue_size_input,
+                    resource_metrics_enabled_input,
+                    resource_metrics_sample_interval_input,
+                    resource_metrics_retention_days_input,
+                    resource_metrics_max_storage_mb_input,
                     agent_api_enabled_input,
                     agent_api_auth_enabled_input,
                     agent_api_port_input,
@@ -457,5 +567,45 @@ pub(crate) fn App() -> Element {
                 )}
             }
         }
+    }
+}
+
+fn overview_running_counts(config: &LoopboxConfig) -> BTreeMap<String, usize> {
+    config
+        .projects
+        .iter()
+        .map(|(name, project)| {
+            let running = project
+                .services
+                .iter()
+                .filter(|service| {
+                    loopbox::service_runtime_status(config, name, &service.name)
+                        .map(|status| {
+                            matches!(
+                                status.state,
+                                loopbox::ServiceRuntimeState::Running
+                                    | loopbox::ServiceRuntimeState::Starting
+                            )
+                        })
+                        .unwrap_or(false)
+                })
+                .count();
+            (name.clone(), running)
+        })
+        .collect()
+}
+
+fn proxy_sidecar_refresh_due(tick: u64) -> bool {
+    tick > 0 && tick.is_multiple_of(PROXY_SIDECAR_REFRESH_TICKS)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn proxy_sidecar_refresh_runs_before_keepalive_expires() {
+        assert!(!super::proxy_sidecar_refresh_due(1));
+        assert!(super::proxy_sidecar_refresh_due(5));
+        assert!(super::proxy_sidecar_refresh_due(10));
+        assert!(!super::proxy_sidecar_refresh_due(11));
     }
 }

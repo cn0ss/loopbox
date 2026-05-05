@@ -39,10 +39,10 @@ gateway.myapp.localhost   →  127.0.0.2:3000
 - **Command Discovery** — scans `package.json` recursively; scores suggestions by service name; detects package manager from lockfiles
 - **Env Management** — discovers and merges `.env*` files; injects `LOOPBOX_*` vars (`LOOPBOX_PORT_*`, `LOOPBOX_PORTS_*`, `LOOPBOX_URL_*`) into every spawned process and terminal
 - **Vite Intelligence** — auto-injects `--host`, `--port`, `--strictPort`, and `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`
-- **Terminal Integration** — one click opens the native terminal with working directory and merged env
+- **Terminal Integration** — process services run with a persistent macOS PTY session; the in-app terminal reconnects after Loopbox restarts, with native Terminal.app kept as a legacy fallback
 - **Health Checks** — TCP port reachability + optional HTTP path and gRPC health target checks; `running` vs `unhealthy` state distinction
 - **Doctor** — validates IPs, `/etc/hosts`, loopback aliases, DNS, ports, and env files; includes direct fix actions
-- **Local Agent API** — localhost HTTP API for tools like Codex/Claude/Cursor (projects, create/update config, runtime, logs, requests, start/stop/restart; no delete endpoint) without manual copy/paste between app and terminal
+- **Local Agent API** — localhost HTTP API for tools like Codex/Claude/Cursor (doctor, projects, create/update config, runtime, logs, requests, service input, start/stop/restart; no delete endpoint) without manual copy/paste between app and terminal
 
 ## Licensing
 
@@ -61,6 +61,7 @@ Loopbox exposes a local API for agent clients while the app is running.
 - Token file: `~/.config/loopbox/agent-api-token` (when auth is enabled)
 - Default URL: `http://127.0.0.1:39393`
 - OpenAPI endpoint: `/v1/openapi.json` (auto-generated at runtime)
+- Runtime input endpoint: `/v1/projects/{project}/services/{service}/input` for attached process services
 - Edit enable/auth/port in **Settings → Agent API**
 
 See `docs/agent-api.md` for endpoint and curl examples.
@@ -76,6 +77,8 @@ dx serve --platform desktop
 ```
 
 If another `dx` binary is earlier in `PATH`, use `$HOME/.cargo/bin/dx` directly or set `DIOXUS_CLI_BIN` when running scripts.
+
+The development default does not compile Ghostty's native library. To build the high-fidelity `libghostty-vt` adapter, install Zig 0.15.2 and run with `--features ghostty-vt`; the build will fetch the pinned Ghostty source unless `GHOSTTY_SOURCE_DIR` points at a local checkout.
 
 1. Click **New Sandbox** → pick a project directory
 2. Add services or hit **Auto Detect** to fill from `package.json` scripts
@@ -93,6 +96,12 @@ ip_base = "127.0.0."
 ip_range_start = 2
 ip_range_end = 254
 
+[global.resource_metrics]
+enabled = true
+sample_interval_secs = 5
+retention_days = 7
+max_storage_mb = 250
+
 [projects.myapp]
 dir = "/Users/you/dev/myapp"
 ip = "127.0.0.2"
@@ -109,6 +118,22 @@ env_files = [".env", ".env.local"]
 port = 8080
 protocol = "http1"
 health_path = "/health"
+
+[[projects.myapp.services]]
+name = "postgres"
+runtime = "container"
+command = ""
+workdir = "/Users/you/dev/myapp"
+
+[projects.myapp.services.container]
+image = "postgres:16-alpine"
+env = ["POSTGRES_DB=myapp", "POSTGRES_PASSWORD=loopbox"]
+volumes = ["myapp-pgdata:/var/lib/postgresql/data"]
+auto_remove = true
+
+[[projects.myapp.services.ports]]
+port = 5432
+protocol = "tcp_passthrough"
 
 [[projects.myapp.services]]
 name = "gateway"
@@ -139,13 +164,15 @@ Service protocols: `http1`, `grpc_h2c`, `tcp_passthrough`.
 
 Loopbox still accepts legacy single-port service fields (`port`, `protocol`, `health_path`) and normalizes them into `services.ports` on save/load.
 
+Resource metrics are sampled while Loopbox or the headless Agent API is running. `sample_interval_secs` is clamped to 2-60 seconds, `retention_days` to 1-90 days, and `max_storage_mb` to 25-5,000 MB.
+
 For gRPC payload decoding, configure `grpc_proto_paths` and ensure `protoc` is available in your `PATH`.
 
 ## Platform Support
 
 Loopbox is primarily supported on macOS. Windows support is experimental and intended for validation of the cross-platform networking/runtime path.
 
-- **macOS:** loopback aliases on `lo0`, managed `/etc/hosts` entries, `pf` redirect rules for domain-only HTTP, Sparkle updates, Terminal.app launch, and PTY attach/input flows.
+- **macOS:** loopback aliases on `lo0`, managed `/etc/hosts` entries, `pf` redirect rules for domain-only HTTP, Sparkle updates, Terminal.app launch, and persistent PTY-backed integrated terminal sessions for process services.
 - **Windows:** loopback aliases through `netsh interface ipv4`, managed `C:\Windows\System32\drivers\etc\hosts` entries, `netsh interface portproxy` rules for domain-only HTTP, native folder dialogs, and standard process start/stop/log follow.
 - **Current Windows gaps:** PTY attach/input flows and auto-update are not yet available. Use standard process mode and manual downloads while Windows support remains experimental.
 
@@ -171,6 +198,8 @@ dx bundle --platform macos --package-types dmg --release
 
 The release scripts prefer `DIOXUS_CLI_BIN`, then `$HOME/.cargo/bin/dx`, then `dx` on `PATH`.
 Release/update tooling lives in this repo under `scripts/`; see `docs/updater/README.md`.
+
+`libghostty-vt` is optional at build time because its native `libghostty-vt-sys` build requires Zig and the pinned Ghostty source. Use `cargo check --features ghostty-vt` or `dx serve --platform desktop --features ghostty-vt` only after installing Zig 0.15.2. Release packaging that enables this feature must bundle and codesign the resulting `libghostty-vt.dylib` if the build links it dynamically.
 
 ## Author
 

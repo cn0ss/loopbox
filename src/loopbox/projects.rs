@@ -1,5 +1,5 @@
 use super::{
-    default_domain_suffix, reverse_proxy_url_for_host, service_ports, AddProjectInput,
+    default_domain_suffix, effective_reverse_proxy_url_for_host, service_ports, AddProjectInput,
     ContainerServiceConfig, GlobalConfig, LoopboxConfig, OpenTarget, ProjectConfig,
     ProxyEndpointProtocol, ServiceConfig, ServiceEntry, ServicePortConfig, ServiceRuntimeKind,
     UpdateProjectInput,
@@ -10,7 +10,10 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
-pub fn add_project(config: &mut LoopboxConfig, input: &AddProjectInput) -> Result<String, String> {
+pub fn preview_add_project(
+    config: &LoopboxConfig,
+    input: &AddProjectInput,
+) -> Result<(String, ProjectConfig), String> {
     let name = normalize_project_name(&input.name)?;
     if config.projects.contains_key(&name) {
         return Err(format!("Project '{name}' already exists."));
@@ -44,8 +47,8 @@ pub fn add_project(config: &mut LoopboxConfig, input: &AddProjectInput) -> Resul
         .or_else(|| services.first())
         .map(|service| service.name.clone());
 
-    config.projects.insert(
-        name.clone(),
+    Ok((
+        name,
         ProjectConfig {
             dir,
             ip,
@@ -56,7 +59,13 @@ pub fn add_project(config: &mut LoopboxConfig, input: &AddProjectInput) -> Resul
             grpc_proto_paths: Vec::new(),
             proxy_endpoints: Vec::new(),
         },
-    );
+    ))
+}
+
+pub fn add_project(config: &mut LoopboxConfig, input: &AddProjectInput) -> Result<String, String> {
+    let (name, project) = preview_add_project(config, input)?;
+
+    config.projects.insert(name.clone(), project);
 
     if let Err(err) = super::ensure_project_agent_guidance(config, &name) {
         config.projects.remove(&name);
@@ -188,7 +197,7 @@ pub fn project_env_exports(config: &LoopboxConfig, name: &str) -> Result<String,
         lines.push(format!("export LOOPBOX_PORTS_{key}=\"{all_ports}\""));
         lines.push(format!(
             "export LOOPBOX_URL_{key}=\"{}\"",
-            format_service_url(&service_host, url_port, Some(&project.ip))
+            format_service_url(config, &service_host, url_port, Some(&project.ip))
         ));
         lines.push(format!(
             "export LOOPBOX_CMD_{key}=\"{}\"",
@@ -222,6 +231,7 @@ pub fn open_url_for(
         .ok_or_else(|| format!("Service '{service_name}' not found in project '{name}'."))?;
     let host = service_host_for(name, &service_name, &config.global.domain_suffix);
     Ok(format_service_url(
+        config,
         &host,
         primary_url_port(service),
         Some(&project.ip),
@@ -728,9 +738,14 @@ fn format_http_url(host: &str, port: Option<u16>) -> String {
     }
 }
 
-fn format_service_url(host: &str, port: Option<u16>, direct_ip: Option<&str>) -> String {
+fn format_service_url(
+    config: &LoopboxConfig,
+    host: &str,
+    port: Option<u16>,
+    direct_ip: Option<&str>,
+) -> String {
     if port.is_some() {
-        if let Some(proxy_url) = reverse_proxy_url_for_host(host) {
+        if let Some(proxy_url) = effective_reverse_proxy_url_for_host(config, host) {
             return proxy_url;
         }
         if let (Some(ip), Some(service_port)) = (direct_ip, port) {

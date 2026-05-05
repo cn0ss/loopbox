@@ -1,9 +1,9 @@
 use super::merge_service_env;
 use super::projects::{effective_hosts_for_project, expand_tilde, validate_project_ip};
 use super::{
-    proxy_redirect_configured, proxy_redirect_required, reverse_proxy_fallback_port,
-    reverse_proxy_status, service_ports, service_runtime_status, DoctorFixAction, DoctorIssue,
-    DoctorLevel, LoopboxConfig, ServiceRuntimeState,
+    effective_reverse_proxy_status, proxy_redirect_configured, proxy_redirect_required,
+    reverse_proxy_fallback_port, service_ports, service_runtime_status, DoctorFixAction,
+    DoctorIssue, DoctorLevel, LoopboxConfig, ServiceRuntimeState,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
@@ -24,7 +24,7 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
     let proxy_redirect_label = crate::platform::networking::proxy_redirect_label();
     let dns_flush_command = crate::platform::networking::dns_flush_command();
 
-    let proxy_status = reverse_proxy_status();
+    let proxy_status = effective_reverse_proxy_status(config);
     if !proxy_status.running {
         issues.push(DoctorIssue::warning(
             None,

@@ -1,9 +1,14 @@
 use crate::app::components::{DoctorIssueRow, ProjectCard};
 use crate::app::log_window::{self, LogWindowConfig};
 use crate::app::models::{DetailTab, Notice, Page, ProjectEditForm};
+use crate::app::runtime_view::{
+    format_cpu_percent, format_memory_bytes, format_sample_age, resource_sparkline_points,
+    runtime_service_action_flags, ResourceMetricKind,
+};
+use crate::app::terminal_window::{self, TerminalWindowConfig};
 use crate::app::utils::{
-    copy_to_clipboard, persist_config_and_apply, preview_project_name, preview_service_name,
-    preview_suffix,
+    copy_to_clipboard, decode_service_input_sequence, persist_config_and_apply,
+    preview_project_name, preview_service_name, preview_suffix,
 };
 use crate::loopbox::{
     self, AddProjectInput, DoctorIssue, LoopboxConfig, OpenTarget, ProjectConfig,
@@ -24,6 +29,7 @@ mod helpers;
 mod project_detail;
 mod project_detail_features;
 mod wizard;
+mod wizard_discovery;
 mod wizard_features;
 
 use editor_helpers::*;
@@ -33,6 +39,7 @@ use project_detail::*;
 use project_detail_features::*;
 use wizard::blank_service_entry as wizard_blank_service_entry;
 use wizard::*;
+use wizard_discovery::*;
 use wizard_features::*;
 // ════════════════════════════════════════════
 // Sandboxes Overview (Project Grid)
@@ -42,6 +49,7 @@ use wizard_features::*;
 pub(in crate::app) fn render_sandboxes_page(
     page: Page,
     selected_project_data: Option<(String, ProjectConfig)>,
+    overview_running_counts: BTreeMap<String, usize>,
     config_snapshot: LoopboxConfig,
     doctor_ok: bool,
     doctor_issue_count: usize,
@@ -52,6 +60,7 @@ pub(in crate::app) fn render_sandboxes_page(
     notice: Signal<Option<Notice>>,
     pending_auto_apply: Signal<Option<String>>,
     mut runtime_tick: Signal<u64>,
+    mut doctor_refresh: Signal<u64>,
     mut current_page: Signal<Page>,
 ) -> Element {
     rsx! {
@@ -89,14 +98,7 @@ pub(in crate::app) fn render_sandboxes_page(
                     div { class: "project-grid",
                         for (index, (name, project)) in config_snapshot.projects.iter().enumerate() {
                             {{
-                                let mut running = 0_usize;
-                                for service in &project.services {
-                                    if let Ok(status) = loopbox::service_runtime_status(&config_snapshot, name, &service.name) {
-                                        if matches!(status.state, ServiceRuntimeState::Running | ServiceRuntimeState::Starting) {
-                                            running += 1;
-                                        }
-                                    }
-                                }
+                                let running = overview_running_counts.get(name).copied().unwrap_or(0);
                                 rsx! {
                                     ProjectCard {
                                         key: "{name}",
@@ -123,6 +125,7 @@ pub(in crate::app) fn render_sandboxes_page(
                                         class: "btn btn-sm btn-outline",
                                         onclick: move |_| {
                                             runtime_tick.with_mut(|tick| *tick = tick.wrapping_add(1));
+                                            doctor_refresh.with_mut(|tick| *tick = tick.wrapping_add(1));
                                         },
                                         "Rerun"
                                     }
@@ -156,6 +159,7 @@ pub(in crate::app) fn render_sandboxes_page(
                     selected_project,
                     pending_auto_apply,
                     runtime_tick,
+                    current_page,
                 }
             }
         }

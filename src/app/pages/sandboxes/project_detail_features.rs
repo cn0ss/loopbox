@@ -260,8 +260,8 @@ pub(super) fn ProjectDetailTrafficTab(
                                     )))),
                                     Err(err) => notice.set(Some(Notice::error(err))),
                                 }
-                                if let Err(err) = loopbox::sync_reverse_proxy(&config()) {
-                                    eprintln!("Loopbox reverse proxy sync warning: {err}");
+                                if let Err(err) = loopbox::sync_reverse_proxy_sidecar(&config()) {
+                                    eprintln!("Loopbox reverse proxy sidecar sync warning: {err}");
                                 }
                                 force_tick();
                             }
@@ -299,8 +299,8 @@ pub(super) fn ProjectDetailTrafficTab(
                                     )))),
                                     Err(err) => notice.set(Some(Notice::error(err))),
                                 }
-                                if let Err(err) = loopbox::sync_reverse_proxy(&config()) {
-                                    eprintln!("Loopbox reverse proxy sync warning: {err}");
+                                if let Err(err) = loopbox::sync_reverse_proxy_sidecar(&config()) {
+                                    eprintln!("Loopbox reverse proxy sidecar sync warning: {err}");
                                 }
                                 force_tick();
                             }

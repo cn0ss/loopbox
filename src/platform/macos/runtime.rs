@@ -37,14 +37,13 @@ pub fn configure_process_group(command: &mut Command) {
 // ---------------------------------------------------------------------------
 
 /// Fork a PTY child that runs `command` (via `/bin/bash -lc`) inside `workdir`,
-/// logging all output to `log_file` and accepting input from the FIFO at
-/// `input_path`.  Returns the child exit code.
-pub fn run_pty_child(
+/// returning the PTY master file descriptor and child PID.
+pub fn spawn_pty_child(
     command_str: &str,
     workdir: &str,
-    log_file_path: &Path,
-    input_path: &Path,
-) -> Result<i32, String> {
+    cols: u16,
+    rows: u16,
+) -> Result<(libc::c_int, libc::pid_t), String> {
     let shell = CString::new("/bin/bash").expect("static path without NUL");
     let arg_lc = CString::new("-lc").expect("static arg without NUL");
     let command_arg = CString::new(command_str)
@@ -52,28 +51,19 @@ pub fn run_pty_child(
     let workdir_c = CString::new(workdir)
         .map_err(|_| "Runtime PTY workdir contains an unsupported NUL byte.".to_string())?;
 
-    if let Some(parent) = log_file_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
-    }
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file_path)
-        .map_err(|err| {
-            format!(
-                "Failed to open runtime PTY log file '{}': {err}",
-                log_file_path.display()
-            )
-        })?;
-
     let mut master_fd: libc::c_int = -1;
+    let mut winsize = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     let child_pid = unsafe {
         libc::forkpty(
             &mut master_fd,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            &mut winsize,
         )
     };
     if child_pid < 0 {
@@ -100,6 +90,66 @@ pub fn run_pty_child(
         }
     }
 
+    Ok((master_fd, child_pid))
+}
+
+pub fn close_fd(fd: libc::c_int) {
+    unsafe {
+        libc::close(fd);
+    }
+}
+
+pub fn resize_pty(
+    fd: libc::c_int,
+    cols: u16,
+    rows: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Result<(), String> {
+    let mut winsize = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: cell_width_px
+            .saturating_mul(u32::from(cols))
+            .min(u32::from(u16::MAX)) as u16,
+        ws_ypixel: cell_height_px
+            .saturating_mul(u32::from(rows))
+            .min(u32::from(u16::MAX)) as u16,
+    };
+    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &mut winsize) } != 0 {
+        return Err(format!(
+            "Failed to resize runtime PTY to {cols}x{rows}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// Fork a PTY child that runs `command` (via `/bin/bash -lc`) inside `workdir`,
+/// logging all output to `log_file` and accepting input from the FIFO at
+/// `input_path`.  Returns the child exit code.
+pub fn run_pty_child(
+    command_str: &str,
+    workdir: &str,
+    log_file_path: &Path,
+    input_path: &Path,
+) -> Result<i32, String> {
+    if let Some(parent) = log_file_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file_path)
+        .map_err(|err| {
+            format!(
+                "Failed to open runtime PTY log file '{}': {err}",
+                log_file_path.display()
+            )
+        })?;
+
+    let (master_fd, child_pid) = spawn_pty_child(command_str, workdir, 80, 24)?;
     let writer_fd = unsafe { libc::dup(master_fd) };
     if writer_fd < 0 {
         unsafe {

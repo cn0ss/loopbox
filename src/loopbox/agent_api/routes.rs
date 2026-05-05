@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn build_router(state: AgentApiState) -> Router {
     let protected = Router::new()
         .route(&format!("/{AGENT_API_VERSION}/meta"), get(meta_handler))
+        .route(&format!("/{AGENT_API_VERSION}/doctor"), get(doctor_handler))
         .route(
             &format!("/{AGENT_API_VERSION}/projects"),
             get(list_projects_handler).post(project_create_handler),
@@ -14,6 +15,10 @@ pub(super) fn build_router(state: AgentApiState) -> Router {
         .route(
             &format!("/{AGENT_API_VERSION}/projects/{{project}}/runtime"),
             get(project_runtime_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/projects/{{project}}/resources"),
+            get(project_resources_handler),
         )
         .route(
             &format!("/{AGENT_API_VERSION}/projects/{{project}}/logs"),
@@ -46,6 +51,10 @@ pub(super) fn build_router(state: AgentApiState) -> Router {
         .route(
             &format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/restart"),
             post(service_restart_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/input"),
+            post(service_input_handler),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -109,7 +118,8 @@ async fn openapi_handler(
 async fn health_handler(
     State(state): State<AgentApiState>,
 ) -> Result<Json<HealthResponse>, ApiError> {
-    let proxy = reverse_proxy_status();
+    let config = load_config_api()?;
+    let proxy = effective_reverse_proxy_status(&config);
     Ok(Json(HealthResponse {
         ok: true,
         api_version: AGENT_API_VERSION,
@@ -119,6 +129,8 @@ async fn health_handler(
             bind_port: proxy.bind_port,
             using_fallback_port: proxy.using_fallback_port,
             note: proxy.note,
+            source: proxy.source,
+            last_error: proxy.last_error,
         },
         agent_api: AgentApiHealthInfo {
             auth_enabled: state.auth_enabled,
@@ -139,6 +151,13 @@ async fn meta_handler(State(state): State<AgentApiState>) -> Result<Json<MetaRes
             "http://127.0.0.1:{}/{AGENT_API_VERSION}/openapi.json",
             state.bind_port
         ),
+    }))
+}
+
+async fn doctor_handler() -> Result<Json<DoctorResponse>, ApiError> {
+    let config = load_config_api()?;
+    Ok(Json(DoctorResponse {
+        issues: doctor_issue_dtos(doctor_report(&config)),
     }))
 }
 
@@ -182,7 +201,7 @@ async fn project_create_handler(
         project: project_name,
         action: "create",
         saved_config_path: persist.saved_config_path,
-        reverse_proxy_synced: true,
+        reverse_proxy_synced: persist.reverse_proxy_synced,
         system_setup_applied: query.apply_system_setup,
         system_setup_message: persist.system_setup_message,
         detail,
@@ -206,7 +225,7 @@ async fn project_update_handler(
         project: project_name,
         action: "update",
         saved_config_path: persist.saved_config_path,
-        reverse_proxy_synced: true,
+        reverse_proxy_synced: persist.reverse_proxy_synced,
         system_setup_applied: query.apply_system_setup,
         system_setup_message: persist.system_setup_message,
         detail,
@@ -222,6 +241,60 @@ async fn project_runtime_handler(
     Ok(Json(ProjectRuntimeResponse {
         project: project_name,
         services,
+    }))
+}
+
+async fn project_resources_handler(
+    Path(project_name): Path<String>,
+    Query(query): Query<ResourcesQuery>,
+) -> Result<Json<ProjectResourcesResponse>, ApiError> {
+    let config = load_config_api()?;
+    let project = get_project(&config, &project_name)?;
+    if let Some(service_name) = query.service.as_ref() {
+        get_service(project, service_name.trim())?;
+    }
+
+    let window = query.window.unwrap_or_else(|| "1h".to_string());
+    let service = query
+        .service
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let limit = clamp_limit(
+        query.limit,
+        DEFAULT_RESOURCE_METRICS_LIMIT,
+        MAX_RESOURCE_METRICS_LIMIT,
+    );
+    let samples =
+        resource_metrics_series_for_project(&project_name, service.as_deref(), &window, limit)
+            .map_err(ApiError::bad_request)?
+            .into_iter()
+            .map(ServiceResourceSampleDto::from)
+            .collect::<Vec<_>>();
+    let latest_map = resource_metrics_latest_for_config(&config)
+        .map_err(|err| ApiError::internal(format!("Failed to read resource metrics: {err}")))?;
+    let latest = project
+        .services
+        .iter()
+        .filter(|service_cfg| {
+            service
+                .as_ref()
+                .is_none_or(|selected| selected == &service_cfg.name)
+        })
+        .filter_map(|service_cfg| {
+            latest_map
+                .get(&format!("{project_name}::{}", service_cfg.name))
+                .cloned()
+        })
+        .map(ServiceResourceSampleDto::from)
+        .collect::<Vec<_>>();
+
+    Ok(Json(ProjectResourcesResponse {
+        project: project_name,
+        service,
+        window,
+        limit,
+        latest,
+        samples,
     }))
 }
 
@@ -393,5 +466,27 @@ async fn service_restart_handler(
         service: Some(service.name.clone()),
         action: "restart",
         results: snapshots_to_dtos(&project_name, project.services.as_slice(), vec![snapshot])?,
+    }))
+}
+
+async fn service_input_handler(
+    State(state): State<AgentApiState>,
+    Path((project_name, service_name)): Path<(String, String)>,
+    Json(request): Json<ServiceInputRequest>,
+) -> Result<Json<ServiceInputResponse>, ApiError> {
+    let _guard = lock_mutation(&state)?;
+    let config = load_config_api()?;
+    let target = resolve_service_input_target(&config, &project_name, &service_name, &request)?;
+    send_service_input(&target.project, &target.service, &target.text)
+        .map_err(|err| ApiError::conflict(format!("Failed to send service input: {err}")))?;
+    let input_attached = service_input_attached(&target.project, &target.service)
+        .map_err(|err| ApiError::internal(format!("Failed to inspect input attachment: {err}")))?;
+    let bytes = target.text.len();
+
+    Ok(Json(ServiceInputResponse {
+        project: target.project,
+        service: target.service,
+        bytes,
+        input_attached,
     }))
 }

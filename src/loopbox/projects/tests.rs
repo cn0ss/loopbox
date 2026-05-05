@@ -293,6 +293,51 @@ fn add_project_writes_agents_guidance_file() {
 }
 
 #[test]
+fn preview_add_project_does_not_write_agent_guidance_or_mutate_config() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("unix time")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("loopbox-preview-no-side-effects-{nonce}"));
+    fs::create_dir_all(&root).expect("create temp project dir");
+
+    let config = LoopboxConfig::default();
+    let input = AddProjectInput {
+        name: "previewed".to_string(),
+        dir: root.display().to_string(),
+        ip: String::new(),
+        services: vec![ServiceEntry {
+            name: "web".to_string(),
+            ports: vec![],
+            port: "3000".to_string(),
+            protocol: "http1".to_string(),
+            command: "npm run dev".to_string(),
+            workdir: root.display().to_string(),
+            env_files: String::new(),
+            depends_on: String::new(),
+            autostart: false,
+            health_path: String::new(),
+            runtime: "process".to_string(),
+            container_image: String::new(),
+            container_args: String::new(),
+            container_env: String::new(),
+            container_volumes: String::new(),
+            container_auto_remove: false,
+        }],
+    };
+
+    let (project_name, project) =
+        preview_add_project(&config, &input).expect("project preview should validate");
+
+    assert_eq!(project_name, "previewed");
+    assert!(validate_project_ip(&config.global, &project.ip).is_ok());
+    assert!(config.projects.is_empty());
+    assert!(!root.join("AGENTS.md").exists());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn add_project_rejects_unknown_dependencies() {
     let mut config = LoopboxConfig::default();
     let input = AddProjectInput {

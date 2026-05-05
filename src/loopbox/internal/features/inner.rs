@@ -127,13 +127,15 @@ pub fn doctor_global_extra_issues(config: &super::LoopboxConfig) -> Vec<super::D
             .any(|service| matches!(service.runtime, super::ServiceRuntimeKind::Container))
     });
 
-    if docker_required && !docker_cli_available() {
+    if docker_required {
+        let Some(docker_message) = docker_unavailable_message() else {
+            return Vec::new();
+        };
         vec![super::DoctorIssue {
             level: super::DoctorLevel::Warning,
             project: None,
             message:
-                "One or more services use runtime 'container', but Docker CLI is not available on PATH."
-                    .to_string(),
+                format!("One or more services use runtime 'container', but Docker is unavailable. {docker_message}"),
             fix: None,
         }]
     } else {
@@ -141,14 +143,10 @@ pub fn doctor_global_extra_issues(config: &super::LoopboxConfig) -> Vec<super::D
     }
 }
 
-fn docker_cli_available() -> bool {
-    std::process::Command::new("docker")
-        .arg("version")
-        .arg("--format")
-        .arg("{{.Server.Version}}")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+fn docker_unavailable_message() -> Option<String> {
+    crate::loopbox::internal::runtime_container::docker_runtime_unavailable_message(
+        &crate::loopbox::internal::runtime_container::docker_runtime_status(),
+    )
 }
 
 mod traffic {

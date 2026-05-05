@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![recursion_limit = "256"]
 
 mod platform;
 #[macro_use]
@@ -23,9 +24,41 @@ fn suppress_noisy_h2_debug_logs() {
     }
 }
 
+fn desktop_lifecycle_mode() -> (dioxus::desktop::WindowCloseBehaviour, bool) {
+    #[cfg(debug_assertions)]
+    {
+        (dioxus::desktop::WindowCloseBehaviour::WindowCloses, true)
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        (dioxus::desktop::WindowCloseBehaviour::WindowHides, false)
+    }
+}
+
+fn desktop_config() -> dioxus::desktop::Config {
+    let (close_behaviour, exits_when_last_window_closes) = desktop_lifecycle_mode();
+
+    dioxus::desktop::Config::new()
+        .with_close_behaviour(close_behaviour)
+        .with_exits_when_last_window_closes(exits_when_last_window_closes)
+        .with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title("Loopbox")
+                .with_inner_size(dioxus::desktop::LogicalSize::new(1280.0, 860.0))
+                .with_min_inner_size(dioxus::desktop::LogicalSize::new(640.0, 480.0)),
+        )
+}
+
 fn main() {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(exit_code) = loopbox::run_runtime_subcommand_from_args(&cli_args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = loopbox::run_agent_api_subcommand_from_args(&cli_args) {
+        std::process::exit(exit_code);
+    }
+    if let Some(exit_code) = loopbox::run_loopbox_mcp_subcommand_from_args(&cli_args) {
         std::process::exit(exit_code);
     }
 
@@ -63,8 +96,11 @@ fn main() {
         Err(err) => eprintln!("Loopbox agent API startup warning: {err}"),
     }
 
-    if let Err(err) = loopbox::sync_reverse_proxy(&config) {
-        eprintln!("Loopbox reverse proxy startup warning: {err}");
+    if let Err(err) = loopbox::sync_reverse_proxy_sidecar(&config) {
+        eprintln!("Loopbox reverse proxy sidecar startup warning: {err}");
+    }
+    if let Err(err) = loopbox::sync_resource_metrics_sampler(&config) {
+        eprintln!("Loopbox resource metrics startup warning: {err}");
     }
 
     match loopbox::cleanup_stale_runtime_processes() {
@@ -78,16 +114,20 @@ fn main() {
     }
 
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            dioxus::desktop::Config::new()
-                .with_close_behaviour(dioxus::desktop::WindowCloseBehaviour::WindowHides)
-                .with_exits_when_last_window_closes(false)
-                .with_window(
-                    dioxus::desktop::WindowBuilder::new()
-                        .with_title("Loopbox")
-                        .with_inner_size(dioxus::desktop::LogicalSize::new(1280.0, 860.0))
-                        .with_min_inner_size(dioxus::desktop::LogicalSize::new(640.0, 480.0)),
-                ),
-        )
+        .with_cfg(desktop_config())
         .launch(app::App);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn debug_desktop_builds_close_windows_so_dx_can_restart_cleanly() {
+        let (close_behaviour, exits_when_last_window_closes) = super::desktop_lifecycle_mode();
+
+        assert_eq!(
+            close_behaviour,
+            dioxus::desktop::WindowCloseBehaviour::WindowCloses
+        );
+        assert!(exits_when_last_window_closes);
+    }
 }

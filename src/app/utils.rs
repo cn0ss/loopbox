@@ -110,3 +110,42 @@ pub(super) fn set_notice_error(mut notice: Signal<Option<Notice>>, message: impl
 pub(super) fn set_notice_info(mut notice: Signal<Option<Notice>>, message: impl Into<String>) {
     notice.set(Some(Notice::info(message)));
 }
+
+pub(super) fn decode_service_input_sequence(raw: &str) -> Result<String, String> {
+    let mut decoded = String::new();
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+        let Some(escape) = chars.next() else {
+            return Err("Invalid key sequence: trailing backslash.".to_string());
+        };
+        match escape {
+            '\\' => decoded.push('\\'),
+            'n' => decoded.push('\n'),
+            'r' => decoded.push('\r'),
+            't' => decoded.push('\t'),
+            '0' => decoded.push('\0'),
+            'x' => {
+                let hi = chars.next().ok_or_else(|| {
+                    "Invalid key sequence: expected two hex digits after \\x.".to_string()
+                })?;
+                let lo = chars.next().ok_or_else(|| {
+                    "Invalid key sequence: expected two hex digits after \\x.".to_string()
+                })?;
+                let value = u8::from_str_radix(&format!("{hi}{lo}"), 16).map_err(|_| {
+                    "Invalid key sequence: expected hex digits after \\x.".to_string()
+                })?;
+                decoded.push(char::from(value));
+            }
+            _ => {
+                return Err(format!(
+                    "Invalid key sequence: unsupported escape '\\{escape}'. Use \\\\, \\n, \\r, \\t, \\0, or \\xNN."
+                ));
+            }
+        }
+    }
+    Ok(decoded)
+}

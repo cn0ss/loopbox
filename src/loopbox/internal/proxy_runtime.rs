@@ -57,6 +57,9 @@ const DEFAULT_PROXY_TRAFFIC_MAX_STORAGE_MB: usize = 500;
 const MIN_PROXY_TRAFFIC_MAX_STORAGE_MB: usize = 50;
 const MAX_PROXY_TRAFFIC_MAX_STORAGE_MB: usize = 10_000;
 const REDACTED_HEADER_VALUE: &str = "[redacted]";
+const PROXY_STATUS_PROBE_TIMEOUT_MS: u64 = 120;
+const PROXY_SIDECAR_STATUS_FILE_NAME: &str = "reverse-proxy-sidecar-status.json";
+const PROXY_SIDECAR_STATUS_TTL_MS: u64 = 20_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LoopboxConfig {
@@ -244,7 +247,7 @@ pub struct ServicePortConfig {
     pub health_path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReverseProxyStatus {
     pub running: bool,
     pub bind_port: u16,
@@ -252,6 +255,37 @@ pub struct ReverseProxyStatus {
     pub note: Option<String>,
     pub listener_count: usize,
     pub endpoint_listener_count: usize,
+    #[serde(default = "default_reverse_proxy_status_source")]
+    pub source: String,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+impl Default for ReverseProxyStatus {
+    fn default() -> Self {
+        Self {
+            running: false,
+            bind_port: 0,
+            using_fallback_port: false,
+            note: None,
+            listener_count: 0,
+            endpoint_listener_count: 0,
+            source: default_reverse_proxy_status_source(),
+            last_error: None,
+        }
+    }
+}
+
+fn default_reverse_proxy_status_source() -> String {
+    "none".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReverseProxySidecarStatusFile {
+    pid: u32,
+    updated_at_unix_ms: u64,
+    status: ReverseProxyStatus,
+    last_error: Option<String>,
 }
 
 pub fn load_config() -> Result<LoopboxConfig, String> {
@@ -571,6 +605,8 @@ pub fn sync_reverse_proxy(config: &LoopboxConfig) -> Result<ReverseProxyStatus, 
     } else {
         Some(notes.join(" "))
     };
+    state.status.source = "in_process".to_string();
+    state.status.last_error = None;
 
     Ok(state.status.clone())
 }
@@ -580,6 +616,31 @@ pub fn reverse_proxy_status() -> ReverseProxyStatus {
         .lock()
         .map(|state| state.status.clone())
         .unwrap_or_default()
+}
+
+pub fn effective_reverse_proxy_status(config: &LoopboxConfig) -> ReverseProxyStatus {
+    let local = reverse_proxy_status();
+    if local.running {
+        return resolve_effective_reverse_proxy_status_with_probe(
+            local,
+            &[],
+            |_host, _port| false,
+            None,
+        );
+    }
+
+    let hosts = proxy_probe_hosts(config);
+    let sidecar_status = reverse_proxy_sidecar_status_from_disk();
+    if let Some(status) = sidecar_status.as_ref().filter(|status| status.running) {
+        return status.clone();
+    }
+
+    resolve_effective_reverse_proxy_status_with_probe(
+        local,
+        &hosts,
+        |host, port| probe_reverse_proxy_port(host, port, PROXY_STATUS_PROBE_TIMEOUT_MS),
+        sidecar_status.and_then(|status| status.last_error),
+    )
 }
 
 pub fn reverse_proxy_url_for_host(host: &str) -> Option<String> {
@@ -592,6 +653,158 @@ pub fn reverse_proxy_url_for_host(host: &str) -> Option<String> {
     } else {
         Some(format!("http://{host}:{}", status.bind_port))
     }
+}
+
+pub fn effective_reverse_proxy_url_for_host(config: &LoopboxConfig, host: &str) -> Option<String> {
+    let status = effective_reverse_proxy_status(config);
+    if !status.running {
+        return None;
+    }
+    if status.bind_port == PROXY_PRIMARY_PORT {
+        Some(format!("http://{host}"))
+    } else {
+        Some(format!("http://{host}:{}", status.bind_port))
+    }
+}
+
+pub fn record_reverse_proxy_sidecar_status(
+    status: &ReverseProxyStatus,
+    last_error: Option<String>,
+) -> Result<(), String> {
+    let path = reverse_proxy_sidecar_status_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    let mut status = status.clone();
+    status.source = "sidecar".to_string();
+    status.last_error = last_error.clone();
+    let payload = ReverseProxySidecarStatusFile {
+        pid: std::process::id(),
+        updated_at_unix_ms: unix_timestamp_ms(SystemTime::now()),
+        status,
+        last_error,
+    };
+    let serialized = serde_json::to_string_pretty(&payload)
+        .map_err(|err| format!("Failed to serialize reverse proxy sidecar status: {err}"))?;
+    fs::write(&path, serialized).map_err(|err| format!("Failed to write {}: {err}", path.display()))
+}
+
+pub fn clear_reverse_proxy_sidecar_status() -> Result<(), String> {
+    let path = reverse_proxy_sidecar_status_path();
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("Failed to remove {}: {err}", path.display())),
+    }
+}
+
+fn resolve_effective_reverse_proxy_status_with_probe<F>(
+    mut local: ReverseProxyStatus,
+    hosts: &[String],
+    probe: F,
+    last_error: Option<String>,
+) -> ReverseProxyStatus
+where
+    F: Fn(&str, u16) -> bool,
+{
+    if local.running {
+        if local.source.trim().is_empty() || local.source == "none" {
+            local.source = "in_process".to_string();
+        }
+        local.last_error = None;
+        return local;
+    }
+
+    for host in hosts {
+        if probe(host, PROXY_PRIMARY_PORT) {
+            return ReverseProxyStatus {
+                running: true,
+                bind_port: PROXY_PRIMARY_PORT,
+                using_fallback_port: false,
+                note: None,
+                listener_count: 1,
+                endpoint_listener_count: 0,
+                source: "external_probe".to_string(),
+                last_error: None,
+            };
+        }
+    }
+    for host in hosts {
+        if probe(host, PROXY_FALLBACK_PORT) {
+            return ReverseProxyStatus {
+                running: true,
+                bind_port: PROXY_FALLBACK_PORT,
+                using_fallback_port: true,
+                note: Some(format!(
+                    "Reverse proxy responded on fallback port {PROXY_FALLBACK_PORT}."
+                )),
+                listener_count: 1,
+                endpoint_listener_count: 0,
+                source: "external_probe".to_string(),
+                last_error: None,
+            };
+        }
+    }
+
+    ReverseProxyStatus {
+        last_error,
+        ..ReverseProxyStatus::default()
+    }
+}
+
+fn proxy_probe_hosts(config: &LoopboxConfig) -> Vec<String> {
+    let mut hosts = build_proxy_routes(config)
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+fn probe_reverse_proxy_port(host: &str, port: u16, timeout_ms: u64) -> bool {
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let timeout = Duration::from_millis(timeout_ms);
+    addrs
+        .filter(|addr| addr.ip().is_loopback())
+        .any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+}
+
+fn reverse_proxy_sidecar_status_from_disk() -> Option<ReverseProxyStatus> {
+    let path = reverse_proxy_sidecar_status_path();
+    let contents = fs::read_to_string(path).ok()?;
+    let record: ReverseProxySidecarStatusFile = serde_json::from_str(&contents).ok()?;
+    let age_ms = unix_timestamp_ms(SystemTime::now()).saturating_sub(record.updated_at_unix_ms);
+    if age_ms > PROXY_SIDECAR_STATUS_TTL_MS {
+        return None;
+    }
+    if !crate::platform::process::pid_exists(record.pid) {
+        return None;
+    }
+    let mut status = record.status;
+    status.source = "sidecar".to_string();
+    if status.last_error.is_none() {
+        status.last_error = record.last_error;
+    }
+    Some(status)
+}
+
+fn reverse_proxy_sidecar_status_path() -> std::path::PathBuf {
+    config_path()
+        .parent()
+        .map(|parent| parent.join(PROXY_SIDECAR_STATUS_FILE_NAME))
+        .unwrap_or_else(|| std::path::PathBuf::from(PROXY_SIDECAR_STATUS_FILE_NAME))
+}
+
+fn unix_timestamp_ms(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn ensure_proxy_traffic_writer_running(config: &LoopboxConfig) -> Result<(), String> {

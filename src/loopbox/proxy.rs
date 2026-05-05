@@ -29,7 +29,7 @@ fn default_proxy_event_protocol() -> String {
     "http1".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReverseProxyStatus {
     pub running: bool,
     pub bind_port: u16,
@@ -37,6 +37,23 @@ pub struct ReverseProxyStatus {
     pub note: Option<String>,
     pub listener_count: usize,
     pub endpoint_listener_count: usize,
+    pub source: String,
+    pub last_error: Option<String>,
+}
+
+impl Default for ReverseProxyStatus {
+    fn default() -> Self {
+        Self {
+            running: false,
+            bind_port: 0,
+            using_fallback_port: false,
+            note: None,
+            listener_count: 0,
+            endpoint_listener_count: 0,
+            source: "none".to_string(),
+            last_error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +170,8 @@ fn map_bridge_status(status: super::proxy_bridge::ReverseProxyStatus) -> Reverse
         note: status.note,
         listener_count: status.listener_count,
         endpoint_listener_count: status.endpoint_listener_count,
+        source: status.source,
+        last_error: status.last_error,
     }
 }
 
@@ -232,6 +251,8 @@ pub fn sync_reverse_proxy(config: &LoopboxConfig) -> Result<ReverseProxyStatus, 
     } else {
         Some(notes.join(" "))
     };
+    state.status.source = "in_process".to_string();
+    state.status.last_error = None;
 
     Ok(state.status.clone())
 }
@@ -245,6 +266,24 @@ pub fn reverse_proxy_status() -> ReverseProxyStatus {
         .lock()
         .map(|state| state.status.clone())
         .unwrap_or_default()
+}
+
+pub fn effective_reverse_proxy_status(config: &LoopboxConfig) -> ReverseProxyStatus {
+    if super::proxy_bridge::override_enabled() {
+        return map_bridge_status(super::proxy_bridge::effective_reverse_proxy_status(config));
+    }
+
+    let local = reverse_proxy_status();
+    if local.running {
+        return local;
+    }
+    let hosts = build_proxy_routes(config)
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    resolve_effective_reverse_proxy_status_with_probe(local, &hosts, |host, port| {
+        probe_reverse_proxy_port(host, port, 120)
+    })
 }
 
 pub fn reverse_proxy_url_for_host(host: &str) -> Option<String> {
@@ -261,6 +300,41 @@ pub fn reverse_proxy_url_for_host(host: &str) -> Option<String> {
     } else {
         Some(format!("http://{host}:{}", status.bind_port))
     }
+}
+
+pub fn effective_reverse_proxy_url_for_host(config: &LoopboxConfig, host: &str) -> Option<String> {
+    if super::proxy_bridge::override_enabled() {
+        return super::proxy_bridge::effective_reverse_proxy_url_for_host(config, host);
+    }
+
+    let status = effective_reverse_proxy_status(config);
+    if !status.running {
+        return None;
+    }
+    if status.bind_port == PROXY_PRIMARY_PORT {
+        Some(format!("http://{host}"))
+    } else {
+        Some(format!("http://{host}:{}", status.bind_port))
+    }
+}
+
+pub fn record_reverse_proxy_sidecar_status(
+    status: &ReverseProxyStatus,
+    last_error: Option<String>,
+) -> Result<(), String> {
+    if super::proxy_bridge::override_enabled() {
+        return super::proxy_bridge::record_reverse_proxy_sidecar_status(status, last_error);
+    }
+    let _ = status;
+    let _ = last_error;
+    Ok(())
+}
+
+pub fn clear_reverse_proxy_sidecar_status() -> Result<(), String> {
+    if super::proxy_bridge::override_enabled() {
+        return super::proxy_bridge::clear_reverse_proxy_sidecar_status();
+    }
+    Ok(())
 }
 
 pub fn reverse_proxy_fallback_port() -> u16 {
@@ -305,6 +379,66 @@ pub fn export_proxy_traffic_har_for_project(
     output_path: &std::path::Path,
 ) -> Result<usize, String> {
     super::features::export_proxy_traffic_har_for_project(project_name, service_filter, output_path)
+}
+
+fn resolve_effective_reverse_proxy_status_with_probe<F>(
+    mut local: ReverseProxyStatus,
+    hosts: &[String],
+    probe: F,
+) -> ReverseProxyStatus
+where
+    F: Fn(&str, u16) -> bool,
+{
+    if local.running {
+        if local.source.trim().is_empty() || local.source == "none" {
+            local.source = "in_process".to_string();
+        }
+        local.last_error = None;
+        return local;
+    }
+
+    for host in hosts {
+        if probe(host, PROXY_PRIMARY_PORT) {
+            return ReverseProxyStatus {
+                running: true,
+                bind_port: PROXY_PRIMARY_PORT,
+                using_fallback_port: false,
+                note: None,
+                listener_count: 1,
+                endpoint_listener_count: 0,
+                source: "external_probe".to_string(),
+                last_error: None,
+            };
+        }
+    }
+    for host in hosts {
+        if probe(host, PROXY_FALLBACK_PORT) {
+            return ReverseProxyStatus {
+                running: true,
+                bind_port: PROXY_FALLBACK_PORT,
+                using_fallback_port: true,
+                note: Some(format!(
+                    "Reverse proxy responded on fallback port {PROXY_FALLBACK_PORT}."
+                )),
+                listener_count: 1,
+                endpoint_listener_count: 0,
+                source: "external_probe".to_string(),
+                last_error: None,
+            };
+        }
+    }
+
+    ReverseProxyStatus::default()
+}
+
+fn probe_reverse_proxy_port(host: &str, port: u16, timeout_ms: u64) -> bool {
+    let Ok(addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let timeout = Duration::from_millis(timeout_ms);
+    addrs
+        .filter(|addr| addr.ip().is_loopback())
+        .any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
 }
 
 fn build_proxy_routes(config: &LoopboxConfig) -> HashMap<String, ProxyRoute> {

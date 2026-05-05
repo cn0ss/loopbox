@@ -190,6 +190,145 @@ fn parse_runtime_attach_bridge_args_accepts_expected_flags() {
 }
 
 #[test]
+fn terminal_protocol_round_trips_snapshot_and_key_messages() {
+    let frame = TerminalFrame {
+        cols: 80,
+        rows: 24,
+        title: "demo".to_string(),
+        cursor_x: 3,
+        cursor_y: 2,
+        lines: vec!["hello".to_string(), "world".to_string()],
+    };
+    let snapshot = TerminalServerMessage::Snapshot(frame.clone());
+    let encoded = encode_terminal_protocol_message(&snapshot).expect("encode snapshot");
+    let decoded: TerminalServerMessage =
+        decode_terminal_protocol_message(&encoded).expect("decode snapshot");
+    assert_eq!(decoded, snapshot);
+
+    let key = TerminalClientMessage::Key {
+        code: "KeyC".to_string(),
+        text: Some("c".to_string()),
+        mods: TerminalMods {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            meta: false,
+        },
+        action: TerminalKeyAction::Press,
+    };
+    let encoded = encode_terminal_protocol_message(&key).expect("encode key");
+    let decoded: TerminalClientMessage =
+        decode_terminal_protocol_message(&encoded).expect("decode key");
+    assert_eq!(decoded, key);
+}
+
+#[cfg(unix)]
+#[test]
+fn pty_runner_falls_back_when_integrated_terminal_cannot_start() {
+    let dir = std::env::temp_dir().join(format!("loopbox-terminal-fallback-{}", nonce()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let fifo = dir.join("input.fifo");
+    let log_file = dir.join("runtime.log");
+    let socket_path_that_cannot_bind = dir.join("terminal.sock");
+    std::fs::create_dir_all(&socket_path_that_cannot_bind).expect("create blocking socket dir");
+
+    let mkfifo = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .output()
+        .expect("run mkfifo");
+    assert!(
+        mkfifo.status.success(),
+        "mkfifo failed: {}",
+        String::from_utf8_lossy(&mkfifo.stderr)
+    );
+
+    let exit_code = run_runtime_pty_runner(RuntimePtyRunnerArgs {
+        workdir: dir.to_string_lossy().to_string(),
+        command: "printf 'fallback terminal ok\\n'".to_string(),
+        log_file: log_file.clone(),
+        input_path: fifo,
+        terminal_control_path: Some(socket_path_that_cannot_bind),
+    })
+    .expect("runner should fall back to legacy pty");
+
+    assert_eq!(exit_code, 0);
+    let log = std::fs::read_to_string(&log_file).expect("read runtime log");
+    assert!(log.contains("Integrated terminal unavailable"));
+    assert!(log.contains("fallback terminal ok"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn runtime_pid_registry_persists_terminal_socket_metadata() {
+    let key = runtime_key("term-project", "web");
+    let entry = RuntimePidEntry {
+        key: key.clone(),
+        project: "term-project".to_string(),
+        service: "web".to_string(),
+        pid: 12345,
+        process_group_leader: true,
+        command: "npm run dev".to_string(),
+        workdir: "/tmp".to_string(),
+        input_path: Some("/tmp/loopbox-old.fifo".to_string()),
+        terminal_control_path: Some("/tmp/loopbox-term.sock".to_string()),
+        terminal_backend_version: Some(TERMINAL_BACKEND_VERSION.to_string()),
+        terminal_cols: Some(100),
+        terminal_rows: Some(30),
+        recorded_at: 1,
+    };
+    let payload = serde_json::to_string(&entry).expect("serialize entry");
+    assert!(payload.contains("terminal_control_path"));
+    assert!(payload.contains("terminal_backend_version"));
+
+    let decoded: RuntimePidEntry = serde_json::from_str(&payload).expect("deserialize entry");
+    assert_eq!(
+        decoded.terminal_control_path.as_deref(),
+        Some("/tmp/loopbox-term.sock")
+    );
+    assert_eq!(decoded.terminal_cols, Some(100));
+    assert_eq!(decoded.terminal_rows, Some(30));
+}
+
+#[test]
+fn legacy_runtime_pid_registry_entries_without_terminal_socket_still_load() {
+    let payload = r#"{
+        "key": "legacy::web",
+        "project": "legacy",
+        "service": "web",
+        "pid": 12345,
+        "process_group_leader": true,
+        "command": "npm run dev",
+        "workdir": "/tmp",
+        "input_path": "/tmp/legacy.fifo",
+        "recorded_at": 1
+    }"#;
+
+    let decoded: RuntimePidEntry = serde_json::from_str(payload).expect("deserialize legacy entry");
+    assert_eq!(decoded.input_path.as_deref(), Some("/tmp/legacy.fifo"));
+    assert_eq!(decoded.terminal_control_path, None);
+    assert_eq!(decoded.terminal_backend_version, None);
+    assert_eq!(decoded.terminal_cols, None);
+    assert_eq!(decoded.terminal_rows, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_socket_paths_fit_macos_unix_socket_limit() {
+    let project_name = "very-long-project-name-for-terminal-socket-paths-".repeat(8);
+    let service_name = "very-long-service-name-for-terminal-socket-paths-".repeat(8);
+    let path = service_terminal_socket_path(&project_name, &service_name);
+    let path = path.to_string_lossy();
+
+    assert!(path.starts_with("/tmp/loopbox-"));
+    assert!(
+        path.len() < 104,
+        "macOS sockaddr_un.sun_path is 104 bytes; got {} bytes at {path}",
+        path.len()
+    );
+}
+
+#[test]
 fn apply_bind_hints_adds_vite_flags_for_pnpm_dev_script() {
     let nonce = nonce();
     let workdir = std::env::temp_dir().join(format!("loopbox-vite-bind-{nonce}"));
@@ -1125,6 +1264,10 @@ fn stale_registry_entries_are_pruned_and_running_history_resets() {
         command: "sleep 1".to_string(),
         workdir: "/tmp".to_string(),
         input_path: None,
+        terminal_control_path: None,
+        terminal_backend_version: None,
+        terminal_cols: None,
+        terminal_rows: None,
         recorded_at: unix_timestamp(SystemTime::now()),
     });
     save_runtime_pid_registry(&registry).expect("save registry");
@@ -1167,6 +1310,10 @@ fn zero_pid_registry_entries_are_pruned() {
         command: "sleep 1".to_string(),
         workdir: "/tmp".to_string(),
         input_path: None,
+        terminal_control_path: None,
+        terminal_backend_version: None,
+        terminal_cols: None,
+        terminal_rows: None,
         recorded_at: unix_timestamp(SystemTime::now()),
     });
     save_runtime_pid_registry(&registry).expect("save registry");

@@ -2,10 +2,12 @@ use super::{
     build_proxy_endpoint_routes, build_proxy_routes, has_header_terminator,
     parse_and_redact_headers, parse_day_from_traffic_filename, parse_day_key, parse_request_host,
     parse_request_line, parse_response_status, proxy_event_to_har_entry, redact_path_query,
-    sanitize_proxy_max_storage_mb, sanitize_proxy_retention_days, sanitize_proxy_writer_queue_size,
+    resolve_effective_reverse_proxy_status_with_probe, sanitize_proxy_max_storage_mb,
+    sanitize_proxy_retention_days, sanitize_proxy_writer_queue_size,
     select_grpc_route_for_authority, strip_host_port, GlobalConfig, LoopboxConfig, PreviewCapture,
     ProjectConfig, ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol, ProxyTrafficEvent,
-    ProxyTrafficHeader, ProxyTrafficSettings, ServiceConfig, ServiceRuntimeKind,
+    ProxyTrafficHeader, ProxyTrafficSettings, ReverseProxyStatus, ServiceConfig,
+    ServiceRuntimeKind,
 };
 use std::collections::BTreeMap;
 
@@ -31,6 +33,79 @@ fn project_proxy_traffic_capture_mode(
         .and_then(|project| project.proxy_traffic_capture_mode.clone())
         .unwrap_or_else(|| config.global.proxy_traffic.capture_mode_default.clone());
     super::enforce_traffic_capture_mode(selected)
+}
+
+#[test]
+fn effective_proxy_status_trusts_in_process_status() {
+    let local = ReverseProxyStatus {
+        running: true,
+        bind_port: 80,
+        using_fallback_port: false,
+        note: None,
+        listener_count: 1,
+        endpoint_listener_count: 0,
+        source: "in_process".to_string(),
+        last_error: None,
+    };
+
+    let status = resolve_effective_reverse_proxy_status_with_probe(
+        local,
+        &["web.demo.localhost".to_string()],
+        |_host, _port| false,
+        None,
+    );
+
+    assert!(status.running);
+    assert_eq!(status.bind_port, 80);
+    assert_eq!(status.source, "in_process");
+}
+
+#[test]
+fn effective_proxy_status_detects_primary_port_probe() {
+    let status = resolve_effective_reverse_proxy_status_with_probe(
+        ReverseProxyStatus::default(),
+        &["web.demo.localhost".to_string()],
+        |host, port| host == "web.demo.localhost" && port == 80,
+        None,
+    );
+
+    assert!(status.running);
+    assert_eq!(status.bind_port, 80);
+    assert!(!status.using_fallback_port);
+    assert_eq!(status.source, "external_probe");
+}
+
+#[test]
+fn effective_proxy_status_detects_fallback_port_probe() {
+    let status = resolve_effective_reverse_proxy_status_with_probe(
+        ReverseProxyStatus::default(),
+        &["web.demo.localhost".to_string()],
+        |host, port| host == "web.demo.localhost" && port == 18_080,
+        None,
+    );
+
+    assert!(status.running);
+    assert_eq!(status.bind_port, 18_080);
+    assert!(status.using_fallback_port);
+    assert_eq!(status.source, "external_probe");
+}
+
+#[test]
+fn effective_proxy_status_stays_down_when_no_probe_matches() {
+    let status = resolve_effective_reverse_proxy_status_with_probe(
+        ReverseProxyStatus::default(),
+        &["web.demo.localhost".to_string()],
+        |_host, _port| false,
+        Some("sidecar failed to start".to_string()),
+    );
+
+    assert!(!status.running);
+    assert_eq!(status.bind_port, 0);
+    assert_eq!(status.source, "none");
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some("sidecar failed to start")
+    );
 }
 
 #[test]

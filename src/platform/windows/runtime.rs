@@ -20,6 +20,27 @@ pub fn run_pty_child(
     Err("PTY mode is not supported on Windows. Use standard process mode.".to_string())
 }
 
+pub fn spawn_pty_child(
+    _command_str: &str,
+    _workdir: &str,
+    _cols: u16,
+    _rows: u16,
+) -> Result<(i32, i32), String> {
+    Err("PTY mode is not supported on Windows. Use standard process mode.".to_string())
+}
+
+pub fn close_fd(_fd: i32) {}
+
+pub fn resize_pty(
+    _fd: i32,
+    _cols: u16,
+    _rows: u16,
+    _cell_width_px: u32,
+    _cell_height_px: u32,
+) -> Result<(), String> {
+    Err("PTY resize is not supported on Windows.".to_string())
+}
+
 pub fn wait_for_child_exit(_pid: i32) -> Result<i32, String> {
     Err("wait_for_child_exit is not supported on Windows.".to_string())
 }

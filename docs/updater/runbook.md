@@ -11,11 +11,13 @@
 ## Standard Release
 
 1. Confirm version intent.
-2. Run `cargo test`.
-3. Run `scripts/release-single-binary.sh`.
-4. Verify the generated archive in `release-artifacts/`.
-5. Verify `appcast.xml` and uploaded updater assets in the configured R2 bucket.
-6. If `PUBLISH_GITHUB_RELEASE=true`, verify the GitHub release artifact.
+2. Run `scripts/smoke-core-workflow.sh`.
+3. Run `scripts/smoke-agent-api-workflow.sh` (headless; covers auth-disabled and auth-enabled Agent API flows).
+4. If Docker is available, optionally run `scripts/smoke-docker-sandbox-port-reuse.sh`.
+5. Run `scripts/release-single-binary.sh`.
+6. Verify the generated archive in `release-artifacts/`.
+7. Verify `appcast.xml` and uploaded updater assets in the configured R2 bucket.
+8. If `PUBLISH_GITHUB_RELEASE=true`, verify the GitHub release artifact.
 
 ## Dry Release Check
 

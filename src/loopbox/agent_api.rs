@@ -1,13 +1,17 @@
 use super::{
-    add_project, app_version_label, apply_system_setup, config_path, load_config,
-    project_primary_host, project_proxy_traffic_capture_mode, project_proxy_traffic_enabled,
-    proxy_traffic_events_for_project_with_persisted, restart_service, reverse_proxy_status,
-    save_config, service_log_attached, service_logs_tail, service_ports, service_runtime_status,
-    start_project_all, start_service, stop_project_all, stop_service, sync_reverse_proxy,
-    update_project, AddProjectInput, AgentApiAuditEvent, AgentApiSettings, ContainerServiceConfig,
-    LoopboxConfig, OpenTarget, ProjectConfig, ProxyCaptureMode, ProxyEndpointProtocol,
-    ServiceConfig, ServiceEntry, ServicePortEntry, ServiceRuntimeKind, ServiceRuntimeSnapshot,
-    ServiceRuntimeState, UpdateProjectInput,
+    add_project, app_version_label, apply_system_setup, clear_reverse_proxy_sidecar_status,
+    config_path, doctor_report, effective_reverse_proxy_status, load_config, project_primary_host,
+    project_proxy_traffic_capture_mode, project_proxy_traffic_enabled,
+    proxy_traffic_events_for_project_with_persisted, record_reverse_proxy_sidecar_status,
+    resource_metrics_latest_for_config, resource_metrics_series_for_project, restart_service,
+    save_config, send_service_input, service_input_attached, service_log_attached,
+    service_logs_tail, service_ports, service_runtime_status, service_terminal_attached,
+    start_project_all, start_service, stop_project_all, stop_service,
+    sync_resource_metrics_sampler, sync_reverse_proxy, update_project, AddProjectInput,
+    AgentApiAuditEvent, AgentApiSettings, ContainerServiceConfig, DoctorFixAction, DoctorIssue,
+    DoctorLevel, LoopboxConfig, OpenTarget, ProjectConfig, ProxyCaptureMode, ProxyEndpointProtocol,
+    ReverseProxyStatus, ServiceConfig, ServiceEntry, ServicePortEntry, ServiceResourceSample,
+    ServiceRuntimeKind, ServiceRuntimeSnapshot, ServiceRuntimeState, UpdateProjectInput,
 };
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header::AUTHORIZATION, StatusCode};
@@ -19,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::{Path as FsPath, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,11 +33,17 @@ const DEFAULT_LOG_LIMIT: usize = 200;
 const MAX_LOG_LIMIT: usize = 2_000;
 const DEFAULT_REQUEST_LIMIT: usize = 200;
 const MAX_REQUEST_LIMIT: usize = 2_000;
+const DEFAULT_RESOURCE_METRICS_LIMIT: usize = 1_000;
+const MAX_RESOURCE_METRICS_LIMIT: usize = 20_000;
 const TOKEN_FILE_NAME: &str = "agent-api-token";
 const DISCOVERY_FILE_NAME: &str = "agent-api.json";
 const AGENT_API_VERSION: &str = "v1";
 const AGENT_GUIDANCE_START_MARKER: &str = "<!-- loopbox-agent-api:start -->";
 const AGENT_GUIDANCE_END_MARKER: &str = "<!-- loopbox-agent-api:end -->";
+const PROXY_SIDECAR_PID_FILE_NAME: &str = "reverse-proxy-sidecar.pid";
+const PROXY_SIDECAR_HEARTBEAT_FILE_NAME: &str = "reverse-proxy-sidecar-heartbeat";
+const PROXY_SIDECAR_HEARTBEAT_TTL_SECS: u64 = 20;
+const PROXY_SIDECAR_LOOP_SECS: u64 = 1;
 
 static AGENT_API_RUNTIME: OnceLock<Mutex<AgentApiRuntime>> = OnceLock::new();
 
@@ -155,6 +166,8 @@ struct ReverseProxyInfo {
     bind_port: u16,
     using_fallback_port: bool,
     note: Option<String>,
+    source: String,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +185,19 @@ struct MetaResponse {
     request_limit_max: usize,
     auth_enabled: bool,
     openapi_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DoctorResponse {
+    issues: Vec<DoctorIssueDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct DoctorIssueDto {
+    level: &'static str,
+    project: Option<String>,
+    message: String,
+    fix_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,9 +260,28 @@ struct ServiceRuntimeDto {
     exit_code: Option<i32>,
     last_error: Option<String>,
     log_attached: bool,
+    input_attached: bool,
+    terminal_attached: bool,
+    resources: Option<ServiceResourceSampleDto>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
+struct ServiceResourceSampleDto {
+    project: String,
+    service: String,
+    sampled_at_unix_ms: u64,
+    sampled_at_utc: String,
+    runtime: &'static str,
+    state: RuntimeStateDto,
+    pid: Option<u32>,
+    cpu_percent: Option<f64>,
+    memory_bytes: Option<u64>,
+    process_count: Option<usize>,
+    container_name: Option<String>,
+    unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RuntimeStateDto {
     Stopped,
@@ -264,6 +309,13 @@ struct LogsResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct RequestsQuery {
     service: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ResourcesQuery {
+    service: Option<String>,
+    window: Option<String>,
     limit: Option<usize>,
 }
 
@@ -328,6 +380,26 @@ struct ProjectServicePortRequest {
     health_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ServiceInputRequest {
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ServiceInputResponse {
+    project: String,
+    service: String,
+    bytes: usize,
+    input_attached: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceInputTarget {
+    project: String,
+    service: String,
+    text: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct RequestsResponse {
     project: String,
@@ -336,6 +408,16 @@ struct RequestsResponse {
     capture_enabled: bool,
     capture_mode: &'static str,
     events: Vec<super::ProxyTrafficEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectResourcesResponse {
+    project: String,
+    service: Option<String>,
+    window: String,
+    limit: usize,
+    latest: Vec<ServiceResourceSampleDto>,
+    samples: Vec<ServiceResourceSampleDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,6 +443,7 @@ struct ProjectConfigMutationResponse {
 #[derive(Debug, Clone)]
 struct ProjectConfigPersistOutcome {
     saved_config_path: String,
+    reverse_proxy_synced: bool,
     system_setup_message: Option<String>,
 }
 
@@ -376,6 +459,13 @@ struct DiscoveryPayload {
     token_path: Option<String>,
     api_version: &'static str,
     generated_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AgentApiHeadlessArgs {
+    run: bool,
+    sync_reverse_proxy: bool,
+    proxy_keepalive: bool,
 }
 
 impl ApiError {
@@ -477,17 +567,19 @@ discovery_file: {discovery_path}\n\
 Recommended agent workflow:\n\
 1) GET /v1/health\n\
 2) GET /v1/meta\n\
-3) GET /v1/projects\n\
-4) GET /v1/projects/{{project}}\n\
-5) GET /v1/projects/{{project}}/runtime\n\
-6) Only when needed: GET /v1/projects/{{project}}/logs?service={{svc}}&limit=50\n\
-7) Only when needed: GET /v1/projects/{{project}}/requests?service={{svc}}&limit=50\n\
-8) Config mutations: POST /v1/projects | PUT /v1/projects/{{project}}\n\
-9) Runtime control: POST /v1/projects/{{project}}/start | /stop | /restart\n\
-10) Service control: POST /v1/projects/{{project}}/services/{{service}}/start | /stop | /restart\n\n\
+3) GET /v1/doctor\n\
+4) GET /v1/projects\n\
+5) GET /v1/projects/{{project}}\n\
+6) GET /v1/projects/{{project}}/runtime\n\
+7) Only when needed: GET /v1/projects/{{project}}/logs?service={{svc}}&limit=50\n\
+8) Only when needed: GET /v1/projects/{{project}}/requests?service={{svc}}&limit=50\n\
+9) Config mutations: POST /v1/projects | PUT /v1/projects/{{project}}\n\
+10) Runtime control: POST /v1/projects/{{project}}/start | /stop | /restart\n\
+11) Service control: POST /v1/projects/{{project}}/services/{{service}}/start | /stop | /restart | /input\n\n\
 Agent behavior:\n\
 - Prefer Loopbox-managed hostnames and Loopbox config over guessing ports.\n\
 - Prefer project/runtime inspection before reading logs.\n\
+- Use runtime input only when a service reports input_attached=true; terminal_attached is UI-only in v1 and terminal frames are not exposed over this API.\n\
 - Use the OpenAPI document for exact schemas and endpoint details.\n\
 - Remember that request capture may be empty or disabled depending on local settings.\n\
 - There is currently no delete project endpoint; avoid assuming one exists.\n\n\
@@ -498,7 +590,7 @@ Add or update a short \"Loopbox Agent API\" section in AGENTS.md or CLAUDE.md wi
 - base_url\n\
 - openapi_url\n\
 - auth mode and token path (if enabled)\n\
-- the core workflow: health -> meta -> projects -> project detail -> runtime -> logs/requests only when needed"
+- the core workflow: health -> meta -> doctor -> projects -> project detail -> runtime -> logs/requests/input only when needed"
     )
 }
 
@@ -584,6 +676,239 @@ pub(super) async fn run_agent_api_audit_middleware(
 pub fn start_agent_api_server() -> Result<AgentApiServerInfo, String> {
     let config = load_config().unwrap_or_default();
     sync_agent_api_server(&config)
+}
+
+pub fn run_agent_api_subcommand_from_args(args: &[String]) -> Option<i32> {
+    if args.first().map(String::as_str) != Some("__agent_api_server") {
+        return None;
+    }
+
+    let parsed = match parse_agent_api_headless_args(args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("Loopbox Agent API headless argument error: {err}");
+            return Some(2);
+        }
+    };
+
+    Some(run_agent_api_headless(parsed))
+}
+
+fn parse_agent_api_headless_args(args: &[String]) -> Result<AgentApiHeadlessArgs, String> {
+    if args.first().map(String::as_str) != Some("__agent_api_server") {
+        return Err("Missing __agent_api_server subcommand.".to_string());
+    }
+
+    let mut sync_reverse_proxy = false;
+    let mut proxy_keepalive = false;
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--sync-reverse-proxy" => sync_reverse_proxy = true,
+            "--no-reverse-proxy" => sync_reverse_proxy = false,
+            "--proxy-keepalive" => {
+                proxy_keepalive = true;
+                sync_reverse_proxy = true;
+            }
+            unknown => {
+                return Err(format!("Unknown Agent API headless argument '{unknown}'."));
+            }
+        }
+    }
+
+    Ok(AgentApiHeadlessArgs {
+        run: true,
+        sync_reverse_proxy,
+        proxy_keepalive,
+    })
+}
+
+fn run_agent_api_headless(args: AgentApiHeadlessArgs) -> i32 {
+    if args.proxy_keepalive {
+        return run_reverse_proxy_keepalive_loop();
+    }
+
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("Loopbox config load warning: {err}");
+            LoopboxConfig::default()
+        }
+    };
+
+    if args.sync_reverse_proxy {
+        if let Err(err) = sync_reverse_proxy(&config) {
+            eprintln!("Loopbox reverse proxy startup warning: {err}");
+        }
+    }
+    if let Err(err) = sync_resource_metrics_sampler(&config) {
+        eprintln!("Loopbox resource metrics startup warning: {err}");
+    }
+
+    match sync_agent_api_server(&config) {
+        Ok(info) if info.running => {
+            let url = info
+                .base_url
+                .unwrap_or_else(|| format!("http://127.0.0.1:{}", info.bind_port));
+            eprintln!("Loopbox agent API headless server listening at {url}.");
+            loop {
+                std::thread::park_timeout(Duration::from_secs(3600));
+            }
+        }
+        Ok(_) => {
+            eprintln!("Loopbox Agent API is disabled in config.");
+            1
+        }
+        Err(err) => {
+            eprintln!("Loopbox agent API startup error: {err}");
+            1
+        }
+    }
+}
+
+pub fn sync_reverse_proxy_sidecar(config: &LoopboxConfig) -> Result<bool, String> {
+    if !config_requires_reverse_proxy_sync(config) {
+        return Ok(false);
+    }
+
+    write_reverse_proxy_sidecar_heartbeat()?;
+    if !should_spawn_reverse_proxy_sidecar(reverse_proxy_sidecar_pid(), |pid| {
+        crate::platform::process::pid_exists(pid)
+    }) {
+        return Ok(true);
+    }
+
+    let current_exe = std::env::current_exe()
+        .map_err(|err| format!("Failed to resolve current Loopbox executable: {err}"))?;
+    let child = Command::new(current_exe)
+        .arg("__agent_api_server")
+        .arg("--sync-reverse-proxy")
+        .arg("--proxy-keepalive")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Failed to start reverse proxy sidecar: {err}"))?;
+    write_reverse_proxy_sidecar_pid(child.id())?;
+    Ok(true)
+}
+
+fn run_reverse_proxy_keepalive_loop() -> i32 {
+    if let Err(err) = write_reverse_proxy_sidecar_pid(std::process::id()) {
+        eprintln!("Loopbox reverse proxy sidecar pid warning: {err}");
+    }
+
+    loop {
+        let status_result = load_config()
+            .map_err(|err| format!("Failed to load config: {err}"))
+            .and_then(|config| sync_reverse_proxy(&config));
+        match status_result {
+            Ok(status) => {
+                if let Err(err) = record_reverse_proxy_sidecar_status(&status, None) {
+                    eprintln!("Loopbox reverse proxy sidecar status warning: {err}");
+                }
+            }
+            Err(err) => {
+                let status = ReverseProxyStatus::default();
+                if let Err(write_err) =
+                    record_reverse_proxy_sidecar_status(&status, Some(err.clone()))
+                {
+                    eprintln!("Loopbox reverse proxy sidecar status warning: {write_err}");
+                }
+                eprintln!("Loopbox reverse proxy sidecar sync warning: {err}");
+            }
+        }
+
+        if !reverse_proxy_sidecar_heartbeat_is_fresh() {
+            break;
+        }
+        thread::sleep(Duration::from_secs(PROXY_SIDECAR_LOOP_SECS));
+    }
+
+    let current_pid = std::process::id();
+    if reverse_proxy_sidecar_pid() == Some(current_pid) {
+        let _ = clear_reverse_proxy_sidecar_pid();
+        let _ = clear_reverse_proxy_sidecar_status();
+    }
+
+    0
+}
+
+fn reverse_proxy_sidecar_pid_path() -> PathBuf {
+    config_path()
+        .parent()
+        .map(|parent| parent.join(PROXY_SIDECAR_PID_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(PROXY_SIDECAR_PID_FILE_NAME))
+}
+
+fn reverse_proxy_sidecar_heartbeat_path() -> PathBuf {
+    config_path()
+        .parent()
+        .map(|parent| parent.join(PROXY_SIDECAR_HEARTBEAT_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(PROXY_SIDECAR_HEARTBEAT_FILE_NAME))
+}
+
+fn reverse_proxy_sidecar_pid() -> Option<u32> {
+    fs::read_to_string(reverse_proxy_sidecar_pid_path())
+        .ok()
+        .and_then(|contents| contents.trim().parse::<u32>().ok())
+}
+
+fn write_reverse_proxy_sidecar_pid(pid: u32) -> Result<(), String> {
+    let path = reverse_proxy_sidecar_pid_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&path, pid.to_string())
+        .map_err(|err| format!("Failed to write {}: {err}", path.display()))
+}
+
+fn clear_reverse_proxy_sidecar_pid() -> Result<(), String> {
+    let path = reverse_proxy_sidecar_pid_path();
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("Failed to remove {}: {err}", path.display())),
+    }
+}
+
+fn write_reverse_proxy_sidecar_heartbeat() -> Result<(), String> {
+    let path = reverse_proxy_sidecar_heartbeat_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&path, unix_timestamp(SystemTime::now()).to_string())
+        .map_err(|err| format!("Failed to write {}: {err}", path.display()))
+}
+
+fn reverse_proxy_sidecar_heartbeat_is_fresh() -> bool {
+    fs::read_to_string(reverse_proxy_sidecar_heartbeat_path())
+        .ok()
+        .and_then(|contents| contents.trim().parse::<u64>().ok())
+        .is_some_and(|timestamp| {
+            reverse_proxy_sidecar_heartbeat_is_fresh_at(
+                timestamp,
+                unix_timestamp(SystemTime::now()),
+            )
+        })
+}
+
+fn should_spawn_reverse_proxy_sidecar<F>(pid: Option<u32>, pid_exists: F) -> bool
+where
+    F: Fn(u32) -> bool,
+{
+    !pid.is_some_and(pid_exists)
+}
+
+fn reverse_proxy_sidecar_heartbeat_is_fresh_at(recorded_at: u64, now: u64) -> bool {
+    now >= recorded_at && now.saturating_sub(recorded_at) <= PROXY_SIDECAR_HEARTBEAT_TTL_SECS
+}
+
+fn unix_timestamp(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub fn sync_agent_api_server(config: &LoopboxConfig) -> Result<AgentApiServerInfo, String> {
@@ -924,8 +1249,17 @@ fn persist_project_config_mutation(
 ) -> Result<ProjectConfigPersistOutcome, ApiError> {
     let path = save_config(config)
         .map_err(|err| ApiError::internal(format!("Failed to save config: {err}")))?;
-    sync_reverse_proxy(config)
-        .map_err(|err| ApiError::conflict(format!("Failed to sync reverse proxy: {err}")))?;
+    let reverse_proxy_synced = if config_requires_reverse_proxy_sync(config) {
+        sync_reverse_proxy_sidecar(config).map_err(|err| {
+            ApiError::conflict(format!("Failed to sync reverse proxy sidecar: {err}"))
+        })?;
+        true
+    } else {
+        false
+    };
+    if let Err(err) = sync_resource_metrics_sampler(config) {
+        eprintln!("Loopbox resource metrics sync warning: {err}");
+    }
 
     let system_setup_message =
         if apply_system {
@@ -938,8 +1272,19 @@ fn persist_project_config_mutation(
 
     Ok(ProjectConfigPersistOutcome {
         saved_config_path: path.display().to_string(),
+        reverse_proxy_synced,
         system_setup_message,
     })
+}
+
+fn config_requires_reverse_proxy_sync(config: &LoopboxConfig) -> bool {
+    config.projects.values().any(|project| {
+        project
+            .services
+            .iter()
+            .any(|service| !service_ports(service).is_empty())
+            || !project.proxy_endpoints.is_empty()
+    }) || !config.global.proxy_endpoints.is_empty()
 }
 
 fn capture_mode_label(mode: ProxyCaptureMode) -> &'static str {
@@ -950,6 +1295,97 @@ fn capture_mode_label(mode: ProxyCaptureMode) -> &'static str {
     }
 }
 
+fn doctor_issue_dtos(issues: Vec<DoctorIssue>) -> Vec<DoctorIssueDto> {
+    issues
+        .into_iter()
+        .map(|issue| DoctorIssueDto {
+            level: doctor_level_label(&issue.level),
+            project: issue.project,
+            message: issue.message,
+            fix_label: issue
+                .fix
+                .as_ref()
+                .map(DoctorFixAction::label)
+                .map(str::to_string),
+        })
+        .collect()
+}
+
+fn doctor_level_label(level: &DoctorLevel) -> &'static str {
+    match level {
+        DoctorLevel::Error => "error",
+        DoctorLevel::Warning => "warning",
+        DoctorLevel::Info => "info",
+    }
+}
+
+fn service_runtime_dto_from_snapshot(
+    snapshot: ServiceRuntimeSnapshot,
+    log_attached: bool,
+    input_attached: bool,
+    terminal_attached: bool,
+    resources: Option<ServiceResourceSample>,
+) -> ServiceRuntimeDto {
+    ServiceRuntimeDto {
+        service: snapshot.service,
+        state: RuntimeStateDto::from(snapshot.state),
+        pid: snapshot.pid,
+        started_at: snapshot.started_at,
+        exit_code: snapshot.exit_code,
+        last_error: snapshot.last_error,
+        log_attached,
+        input_attached,
+        terminal_attached,
+        resources: resources.map(ServiceResourceSampleDto::from),
+    }
+}
+
+impl From<ServiceResourceSample> for ServiceResourceSampleDto {
+    fn from(value: ServiceResourceSample) -> Self {
+        Self {
+            project: value.project_name,
+            service: value.service_name,
+            sampled_at_unix_ms: value.sampled_at_unix_ms,
+            sampled_at_utc: value.sampled_at_utc,
+            runtime: service_runtime_kind_label(value.runtime),
+            state: RuntimeStateDto::from(value.state),
+            pid: value.pid,
+            cpu_percent: value.cpu_percent,
+            memory_bytes: value.memory_bytes,
+            process_count: value.process_count,
+            container_name: value.container_name,
+            unavailable_reason: value.unavailable_reason,
+        }
+    }
+}
+
+fn resolve_service_input_target(
+    config: &LoopboxConfig,
+    project_name: &str,
+    service_name: &str,
+    request: &ServiceInputRequest,
+) -> Result<ServiceInputTarget, ApiError> {
+    if request.text.trim().is_empty() {
+        return Err(ApiError::bad_request("Input text cannot be empty."));
+    }
+
+    let project = get_project(config, project_name)?;
+    let service = get_service(project, service_name)?;
+    if service.runtime != ServiceRuntimeKind::Process {
+        return Err(ApiError::bad_request(format!(
+            "Service '{}' uses runtime '{}' and does not support runtime input.",
+            service.name,
+            service_runtime_kind_label(service.runtime)
+        )));
+    }
+
+    Ok(ServiceInputTarget {
+        project: project_name.to_string(),
+        service: service.name.clone(),
+        text: request.text.clone(),
+    })
+}
+
 fn snapshots_to_dtos(
     project_name: &str,
     project_services: &[ServiceConfig],
@@ -958,15 +1394,17 @@ fn snapshots_to_dtos(
     let mut out = Vec::with_capacity(snapshots.len());
     for snapshot in snapshots {
         let attached = service_log_attached(project_name, &snapshot.service).unwrap_or(false);
-        out.push(ServiceRuntimeDto {
-            service: snapshot.service,
-            state: RuntimeStateDto::from(snapshot.state),
-            pid: snapshot.pid,
-            started_at: snapshot.started_at,
-            exit_code: snapshot.exit_code,
-            last_error: snapshot.last_error,
-            log_attached: attached,
-        });
+        let input_attached =
+            service_input_attached(project_name, &snapshot.service).unwrap_or(false);
+        let terminal_attached =
+            service_terminal_attached(project_name, &snapshot.service).unwrap_or(false);
+        out.push(service_runtime_dto_from_snapshot(
+            snapshot,
+            attached,
+            input_attached,
+            terminal_attached,
+            None,
+        ));
     }
     if out.is_empty() && !project_services.is_empty() {
         return Err(ApiError::internal(
@@ -982,19 +1420,23 @@ fn runtime_snapshot_dtos(
     services: &[ServiceConfig],
 ) -> Result<Vec<ServiceRuntimeDto>, ApiError> {
     let mut snapshots = Vec::with_capacity(services.len());
+    let latest_resources = resource_metrics_latest_for_config(config).unwrap_or_default();
     for service in services {
         let snapshot = service_runtime_status(config, project_name, &service.name)
             .map_err(|err| ApiError::internal(format!("Failed to read runtime status: {err}")))?;
         let attached = service_log_attached(project_name, &service.name).unwrap_or(false);
-        snapshots.push(ServiceRuntimeDto {
-            service: service.name.clone(),
-            state: RuntimeStateDto::from(snapshot.state),
-            pid: snapshot.pid,
-            started_at: snapshot.started_at,
-            exit_code: snapshot.exit_code,
-            last_error: snapshot.last_error,
-            log_attached: attached,
-        });
+        let input_attached = service_input_attached(project_name, &service.name).unwrap_or(false);
+        let terminal_attached =
+            service_terminal_attached(project_name, &service.name).unwrap_or(false);
+        let resource_key = format!("{project_name}::{}", service.name);
+        let resources = latest_resources.get(&resource_key).cloned();
+        snapshots.push(service_runtime_dto_from_snapshot(
+            snapshot,
+            attached,
+            input_attached,
+            terminal_attached,
+            resources,
+        ));
     }
     Ok(snapshots)
 }
@@ -1187,6 +1629,365 @@ fn nibble_to_hex(value: u8) -> char {
     }
 }
 
+fn openapi_json_response(schema_name: &str) -> serde_json::Value {
+    json!({
+        "description": schema_name,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "$ref": format!("#/components/schemas/{schema_name}")
+                }
+            }
+        }
+    })
+}
+
+fn openapi_component_schemas() -> serde_json::Value {
+    json!({
+        "ApiErrorEnvelope": {
+            "type": "object",
+            "required": ["error"],
+            "properties": {
+                "error": { "$ref": "#/components/schemas/ApiErrorBody" }
+            }
+        },
+        "ApiErrorBody": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+                "code": { "type": "string" },
+                "message": { "type": "string" },
+                "details": { "type": "object", "nullable": true }
+            }
+        },
+        "HealthResponse": {
+            "type": "object",
+            "required": ["ok", "api_version", "app_version", "reverse_proxy", "agent_api"],
+            "properties": {
+                "ok": { "type": "boolean" },
+                "api_version": { "type": "string" },
+                "app_version": { "type": "string" },
+                "reverse_proxy": { "$ref": "#/components/schemas/ReverseProxyInfo" },
+                "agent_api": { "$ref": "#/components/schemas/AgentApiHealthInfo" }
+            }
+        },
+        "ReverseProxyInfo": {
+            "type": "object",
+            "required": ["running", "bind_port", "using_fallback_port", "source"],
+            "properties": {
+                "running": { "type": "boolean" },
+                "bind_port": { "type": "integer", "format": "uint16" },
+                "using_fallback_port": { "type": "boolean" },
+                "note": { "type": "string", "nullable": true },
+                "source": { "type": "string", "enum": ["in_process", "sidecar", "external_probe", "none"] },
+                "last_error": { "type": "string", "nullable": true }
+            }
+        },
+        "AgentApiHealthInfo": {
+            "type": "object",
+            "required": ["auth_enabled", "bind_port"],
+            "properties": {
+                "auth_enabled": { "type": "boolean" },
+                "bind_port": { "type": "integer", "format": "uint16" }
+            }
+        },
+        "MetaResponse": {
+            "type": "object",
+            "required": ["api_version", "log_limit_default", "log_limit_max", "request_limit_default", "request_limit_max", "auth_enabled", "openapi_url"],
+            "properties": {
+                "api_version": { "type": "string" },
+                "log_limit_default": { "type": "integer" },
+                "log_limit_max": { "type": "integer" },
+                "request_limit_default": { "type": "integer" },
+                "request_limit_max": { "type": "integer" },
+                "auth_enabled": { "type": "boolean" },
+                "openapi_url": { "type": "string" }
+            }
+        },
+        "DoctorResponse": {
+            "type": "object",
+            "required": ["issues"],
+            "properties": {
+                "issues": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/DoctorIssueDto" }
+                }
+            }
+        },
+        "DoctorIssueDto": {
+            "type": "object",
+            "required": ["level", "message"],
+            "properties": {
+                "level": { "type": "string", "enum": ["error", "warning", "info"] },
+                "project": { "type": "string", "nullable": true },
+                "message": { "type": "string" },
+                "fix_label": { "type": "string", "nullable": true }
+            }
+        },
+        "ProjectsResponse": {
+            "type": "object",
+            "required": ["projects"],
+            "properties": {
+                "projects": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ProjectSummary" }
+                }
+            }
+        },
+        "ProjectSummary": {
+            "type": "object",
+            "required": ["name", "dir", "ip", "primary_host", "service_count", "status"],
+            "properties": {
+                "name": { "type": "string" },
+                "dir": { "type": "string" },
+                "ip": { "type": "string" },
+                "primary_host": { "type": "string" },
+                "service_count": { "type": "integer" },
+                "status": { "$ref": "#/components/schemas/RuntimeCounts" }
+            }
+        },
+        "RuntimeCounts": {
+            "type": "object",
+            "required": ["running", "starting", "unhealthy", "crashed", "stopped", "unknown"],
+            "properties": {
+                "running": { "type": "integer" },
+                "starting": { "type": "integer" },
+                "unhealthy": { "type": "integer" },
+                "crashed": { "type": "integer" },
+                "stopped": { "type": "integer" },
+                "unknown": { "type": "integer" }
+            }
+        },
+        "ProjectDetailResponse": {
+            "type": "object",
+            "required": ["name", "primary_host", "config", "services", "capture_enabled", "capture_mode"],
+            "properties": {
+                "name": { "type": "string" },
+                "primary_host": { "type": "string" },
+                "config": { "type": "object" },
+                "services": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ProjectServiceDetail" }
+                },
+                "capture_enabled": { "type": "boolean" },
+                "capture_mode": { "type": "string", "enum": ["metadata", "headers", "body_preview"] }
+            }
+        },
+        "ProjectServiceDetail": {
+            "type": "object",
+            "required": ["name", "host", "url", "command", "workdir"],
+            "properties": {
+                "name": { "type": "string" },
+                "port": { "type": "integer", "format": "uint16", "nullable": true },
+                "host": { "type": "string" },
+                "url": { "type": "string" },
+                "command": { "type": "string" },
+                "workdir": { "type": "string" }
+            }
+        },
+        "ProjectRuntimeResponse": {
+            "type": "object",
+            "required": ["project", "services"],
+            "properties": {
+                "project": { "type": "string" },
+                "services": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ServiceRuntimeDto" }
+                }
+            }
+        },
+        "ServiceRuntimeDto": {
+            "type": "object",
+            "required": ["service", "state", "log_attached", "input_attached", "terminal_attached"],
+            "properties": {
+                "service": { "type": "string" },
+                "state": { "$ref": "#/components/schemas/RuntimeStateDto" },
+                "pid": { "type": "integer", "format": "uint32", "nullable": true },
+                "started_at": { "type": "integer", "format": "uint64", "nullable": true },
+                "exit_code": { "type": "integer", "nullable": true },
+                "last_error": { "type": "string", "nullable": true },
+                "log_attached": { "type": "boolean" },
+                "input_attached": { "type": "boolean" },
+                "terminal_attached": { "type": "boolean" },
+                "resources": {
+                    "nullable": true,
+                    "allOf": [{ "$ref": "#/components/schemas/ServiceResourceSampleDto" }]
+                }
+            }
+        },
+        "ServiceResourceSampleDto": {
+            "type": "object",
+            "required": ["project", "service", "sampled_at_unix_ms", "sampled_at_utc", "runtime", "state"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string" },
+                "sampled_at_unix_ms": { "type": "integer", "format": "uint64" },
+                "sampled_at_utc": { "type": "string" },
+                "runtime": { "type": "string", "enum": ["process", "container"] },
+                "state": { "$ref": "#/components/schemas/RuntimeStateDto" },
+                "pid": { "type": "integer", "format": "uint32", "nullable": true },
+                "cpu_percent": { "type": "number", "format": "double", "nullable": true },
+                "memory_bytes": { "type": "integer", "format": "uint64", "nullable": true },
+                "process_count": { "type": "integer", "nullable": true },
+                "container_name": { "type": "string", "nullable": true },
+                "unavailable_reason": { "type": "string", "nullable": true }
+            }
+        },
+        "ProjectResourcesResponse": {
+            "type": "object",
+            "required": ["project", "window", "limit", "latest", "samples"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string", "nullable": true },
+                "window": { "type": "string", "enum": ["15m", "1h", "24h", "7d"] },
+                "limit": { "type": "integer" },
+                "latest": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ServiceResourceSampleDto" }
+                },
+                "samples": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ServiceResourceSampleDto" }
+                }
+            }
+        },
+        "RuntimeStateDto": {
+            "type": "string",
+            "enum": ["stopped", "starting", "running", "unhealthy", "crashed"]
+        },
+        "LogsResponse": {
+            "type": "object",
+            "required": ["project", "service", "limit", "log_attached", "lines"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string" },
+                "limit": { "type": "integer" },
+                "log_attached": { "type": "boolean" },
+                "lines": { "type": "array", "items": { "type": "string" } }
+            }
+        },
+        "RequestsResponse": {
+            "type": "object",
+            "required": ["project", "limit", "capture_enabled", "capture_mode", "events"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string", "nullable": true },
+                "limit": { "type": "integer" },
+                "capture_enabled": { "type": "boolean" },
+                "capture_mode": { "type": "string", "enum": ["metadata", "headers", "body_preview"] },
+                "events": { "type": "array", "items": { "type": "object" } }
+            }
+        },
+        "MutationResponse": {
+            "type": "object",
+            "required": ["project", "action", "results"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string", "nullable": true },
+                "action": { "type": "string", "enum": ["start", "stop", "restart"] },
+                "results": { "type": "array", "items": { "$ref": "#/components/schemas/ServiceRuntimeDto" } }
+            }
+        },
+        "ProjectConfigMutationResponse": {
+            "type": "object",
+            "required": ["project", "action", "saved_config_path", "reverse_proxy_synced", "system_setup_applied", "detail"],
+            "properties": {
+                "project": { "type": "string" },
+                "action": { "type": "string", "enum": ["create", "update"] },
+                "saved_config_path": { "type": "string" },
+                "reverse_proxy_synced": { "type": "boolean" },
+                "system_setup_applied": { "type": "boolean" },
+                "system_setup_message": { "type": "string", "nullable": true },
+                "detail": { "$ref": "#/components/schemas/ProjectDetailResponse" }
+            }
+        },
+        "ProjectCreateRequest": {
+            "type": "object",
+            "required": ["name", "dir"],
+            "properties": {
+                "name": { "type": "string" },
+                "dir": { "type": "string" },
+                "ip": { "type": "string" },
+                "services": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ProjectServiceRequest" }
+                }
+            }
+        },
+        "ProjectUpdateRequest": {
+            "type": "object",
+            "required": ["dir"],
+            "properties": {
+                "dir": { "type": "string" },
+                "ip": { "type": "string" },
+                "services": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ProjectServiceRequest" }
+                }
+            }
+        },
+        "ProjectServiceRequest": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": { "type": "string" },
+                "ports": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectServicePortRequest" } },
+                "port": { "type": "integer", "format": "uint16", "nullable": true },
+                "protocol": { "$ref": "#/components/schemas/ProxyEndpointProtocol" },
+                "runtime": { "type": "string", "enum": ["process", "container"] },
+                "command": { "type": "string" },
+                "workdir": { "type": "string" },
+                "env_files": { "type": "array", "items": { "type": "string" } },
+                "depends_on": { "type": "array", "items": { "type": "string" } },
+                "autostart": { "type": "boolean" },
+                "health_path": { "type": "string", "nullable": true },
+                "container": { "$ref": "#/components/schemas/ContainerServiceConfig" }
+            }
+        },
+        "ProjectServicePortRequest": {
+            "type": "object",
+            "required": ["port"],
+            "properties": {
+                "port": { "type": "integer", "format": "uint16" },
+                "protocol": { "$ref": "#/components/schemas/ProxyEndpointProtocol" },
+                "health_path": { "type": "string", "nullable": true }
+            }
+        },
+        "ProxyEndpointProtocol": {
+            "type": "string",
+            "enum": ["http1", "grpc_h2c", "tcp_passthrough"]
+        },
+        "ContainerServiceConfig": {
+            "type": "object",
+            "required": ["image"],
+            "properties": {
+                "image": { "type": "string" },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "env": { "type": "array", "items": { "type": "string" } },
+                "volumes": { "type": "array", "items": { "type": "string" } },
+                "auto_remove": { "type": "boolean" }
+            }
+        },
+        "ServiceInputRequest": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": { "type": "string" }
+            }
+        },
+        "ServiceInputResponse": {
+            "type": "object",
+            "required": ["project", "service", "bytes", "input_attached"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string" },
+                "bytes": { "type": "integer" },
+                "input_attached": { "type": "boolean" }
+            }
+        }
+    })
+}
+
 fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
     let mut get_security = Vec::new();
     if auth_enabled {
@@ -1195,7 +1996,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
 
     let mut project_get = json!({
         "summary": "List projects",
-        "responses": { "200": { "description": "Project list" } }
+        "responses": { "200": openapi_json_response("ProjectsResponse") }
     });
     if auth_enabled {
         project_get["security"] = json!([{ "bearerAuth": [] }]);
@@ -1218,7 +2019,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
             format!("/{AGENT_API_VERSION}/health"): {
                 "get": {
                     "summary": "Health check",
-                    "responses": { "200": { "description": "OK" } }
+                    "responses": { "200": openapi_json_response("HealthResponse") }
                 }
             },
             format!("/{AGENT_API_VERSION}/openapi.json"): {
@@ -1230,7 +2031,14 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
             format!("/{AGENT_API_VERSION}/meta"): {
                 "get": {
                     "summary": "API metadata",
-                    "responses": { "200": { "description": "Metadata" } },
+                    "responses": { "200": openapi_json_response("MetaResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/doctor"): {
+                "get": {
+                    "summary": "Doctor issues",
+                    "responses": { "200": openapi_json_response("DoctorResponse") },
                     "security": get_security
                 }
             },
@@ -1245,11 +2053,11 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         "required": true,
                         "content": {
                             "application/json": {
-                                "schema": { "type": "object" }
+                                "schema": { "$ref": "#/components/schemas/ProjectCreateRequest" }
                             }
                         }
                     },
-                    "responses": { "200": { "description": "Project mutation result" } },
+                    "responses": { "200": openapi_json_response("ProjectConfigMutationResponse") },
                     "security": get_security
                 }
             },
@@ -1259,7 +2067,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "parameters": [
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Project details" } },
+                    "responses": { "200": openapi_json_response("ProjectDetailResponse") },
                     "security": get_security
                 },
                 "put": {
@@ -1272,11 +2080,11 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         "required": true,
                         "content": {
                             "application/json": {
-                                "schema": { "type": "object" }
+                                "schema": { "$ref": "#/components/schemas/ProjectUpdateRequest" }
                             }
                         }
                     },
-                    "responses": { "200": { "description": "Project mutation result" } },
+                    "responses": { "200": openapi_json_response("ProjectConfigMutationResponse") },
                     "security": get_security
                 }
             },
@@ -1286,7 +2094,20 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "parameters": [
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Runtime" } },
+                    "responses": { "200": openapi_json_response("ProjectRuntimeResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/projects/{{project}}/resources"): {
+                "get": {
+                    "summary": "Project resource metrics",
+                    "parameters": [
+                        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+                        { "name": "service", "in": "query", "required": false, "schema": { "type": "string" } },
+                        { "name": "window", "in": "query", "required": false, "schema": { "type": "string", "enum": ["15m", "1h", "24h", "7d"], "default": "1h" } },
+                        { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 20000 } }
+                    ],
+                    "responses": { "200": openapi_json_response("ProjectResourcesResponse") },
                     "security": get_security
                 }
             },
@@ -1298,7 +2119,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         { "name": "service", "in": "query", "required": true, "schema": { "type": "string" } },
                         { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 2000 } }
                     ],
-                    "responses": { "200": { "description": "Log lines" } },
+                    "responses": { "200": openapi_json_response("LogsResponse") },
                     "security": get_security
                 }
             },
@@ -1310,7 +2131,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         { "name": "service", "in": "query", "required": false, "schema": { "type": "string" } },
                         { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 2000 } }
                     ],
-                    "responses": { "200": { "description": "Traffic events" } },
+                    "responses": { "200": openapi_json_response("RequestsResponse") },
                     "security": get_security
                 }
             },
@@ -1320,7 +2141,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "parameters": [
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Mutation result" } },
+                    "responses": { "200": openapi_json_response("MutationResponse") },
                     "security": get_security
                 }
             },
@@ -1330,7 +2151,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "parameters": [
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Mutation result" } },
+                    "responses": { "200": openapi_json_response("MutationResponse") },
                     "security": get_security
                 }
             },
@@ -1340,7 +2161,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "parameters": [
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Mutation result" } },
+                    "responses": { "200": openapi_json_response("MutationResponse") },
                     "security": get_security
                 }
             },
@@ -1351,7 +2172,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
                         { "name": "service", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Mutation result" } },
+                    "responses": { "200": openapi_json_response("MutationResponse") },
                     "security": get_security
                 }
             },
@@ -1362,7 +2183,7 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
                         { "name": "service", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Mutation result" } },
+                    "responses": { "200": openapi_json_response("MutationResponse") },
                     "security": get_security
                 }
             },
@@ -1373,7 +2194,26 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
                         { "name": "service", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
-                    "responses": { "200": { "description": "Mutation result" } },
+                    "responses": { "200": openapi_json_response("MutationResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/input"): {
+                "post": {
+                    "summary": "Send input to one service",
+                    "parameters": [
+                        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+                        { "name": "service", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/ServiceInputRequest" }
+                            }
+                        }
+                    },
+                    "responses": { "200": openapi_json_response("ServiceInputResponse") },
                     "security": get_security
                 }
             }
@@ -1384,7 +2224,8 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "type": "http",
                     "scheme": "bearer"
                 }
-            }
+            },
+            "schemas": openapi_component_schemas()
         }
     })
 }
@@ -1402,6 +2243,7 @@ mod tests {
             (format!("/{AGENT_API_VERSION}/health"), vec!["get"]),
             (format!("/{AGENT_API_VERSION}/openapi.json"), vec!["get"]),
             (format!("/{AGENT_API_VERSION}/meta"), vec!["get"]),
+            (format!("/{AGENT_API_VERSION}/doctor"), vec!["get"]),
             (
                 format!("/{AGENT_API_VERSION}/projects"),
                 vec!["get", "post"],
@@ -1412,6 +2254,10 @@ mod tests {
             ),
             (
                 format!("/{AGENT_API_VERSION}/projects/{{project}}/runtime"),
+                vec!["get"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/resources"),
                 vec!["get"],
             ),
             (
@@ -1444,6 +2290,10 @@ mod tests {
             ),
             (
                 format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/restart"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/input"),
                 vec!["post"],
             ),
         ];
@@ -1483,6 +2333,373 @@ mod tests {
             spec["components"]["securitySchemes"]["bearerAuth"]["scheme"],
             "bearer"
         );
+
+        let schemas = spec["components"]["schemas"]
+            .as_object()
+            .expect("schemas object");
+        assert!(schemas.contains_key("HealthResponse"));
+        assert!(schemas.contains_key("DoctorResponse"));
+        assert!(schemas.contains_key("ProjectRuntimeResponse"));
+        assert!(schemas.contains_key("ProjectResourcesResponse"));
+        assert!(schemas.contains_key("ServiceResourceSampleDto"));
+        assert!(schemas.contains_key("ProjectCreateRequest"));
+        assert!(schemas.contains_key("ServiceInputRequest"));
+        assert_eq!(
+            schemas["ServiceRuntimeDto"]["properties"]["input_attached"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            schemas["ServiceRuntimeDto"]["properties"]["terminal_attached"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            schemas["ProjectServiceRequest"]["properties"]["runtime"]["enum"][1],
+            "container"
+        );
+        assert!(schemas["ProjectServiceRequest"]["properties"]
+            .as_object()
+            .expect("service request properties")
+            .contains_key("container"));
+        assert_eq!(
+            spec["paths"][format!("/{AGENT_API_VERSION}/projects/{{project}}/runtime")]["get"]
+                ["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ProjectRuntimeResponse"
+        );
+        assert_eq!(
+            spec["paths"][format!("/{AGENT_API_VERSION}/projects/{{project}}/resources")]["get"]
+                ["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ProjectResourcesResponse"
+        );
+    }
+
+    #[test]
+    fn agent_api_headless_subcommand_is_detected_and_parsed() {
+        let args = vec!["__agent_api_server".to_string()];
+        let parsed = parse_agent_api_headless_args(&args).expect("headless args");
+
+        assert!(parsed.run);
+        assert!(!parsed.sync_reverse_proxy);
+        assert!(!parsed.proxy_keepalive);
+    }
+
+    #[test]
+    fn agent_api_headless_subcommand_parses_reverse_proxy_flags_and_rejects_unknown_flags() {
+        let sync_args = vec![
+            "__agent_api_server".to_string(),
+            "--sync-reverse-proxy".to_string(),
+        ];
+        let parsed = parse_agent_api_headless_args(&sync_args).expect("sync args");
+        assert!(parsed.run);
+        assert!(parsed.sync_reverse_proxy);
+        assert!(!parsed.proxy_keepalive);
+
+        let no_proxy_args = vec![
+            "__agent_api_server".to_string(),
+            "--sync-reverse-proxy".to_string(),
+            "--no-reverse-proxy".to_string(),
+        ];
+        let parsed = parse_agent_api_headless_args(&no_proxy_args).expect("no proxy args");
+        assert!(parsed.run);
+        assert!(!parsed.sync_reverse_proxy);
+        assert!(!parsed.proxy_keepalive);
+
+        let err = parse_agent_api_headless_args(&[
+            "__agent_api_server".to_string(),
+            "--unknown".to_string(),
+        ])
+        .expect_err("unknown flag should fail");
+        assert!(err.contains("Unknown Agent API headless argument '--unknown'"));
+    }
+
+    #[test]
+    fn agent_api_headless_subcommand_parses_proxy_keepalive_mode() {
+        let args = vec![
+            "__agent_api_server".to_string(),
+            "--sync-reverse-proxy".to_string(),
+            "--proxy-keepalive".to_string(),
+        ];
+        let parsed = parse_agent_api_headless_args(&args).expect("proxy keepalive args");
+
+        assert!(parsed.run);
+        assert!(parsed.sync_reverse_proxy);
+        assert!(parsed.proxy_keepalive);
+    }
+
+    #[test]
+    fn reverse_proxy_sidecar_spawn_decision_avoids_duplicate_live_pid() {
+        assert!(!should_spawn_reverse_proxy_sidecar(Some(42), |pid| pid != 0));
+        assert!(should_spawn_reverse_proxy_sidecar(Some(42), |_pid| false));
+        assert!(should_spawn_reverse_proxy_sidecar(None, |_pid| true));
+    }
+
+    #[test]
+    fn reverse_proxy_sidecar_heartbeat_freshness_expires_after_ttl() {
+        assert!(reverse_proxy_sidecar_heartbeat_is_fresh_at(100, 119));
+        assert!(reverse_proxy_sidecar_heartbeat_is_fresh_at(100, 120));
+        assert!(!reverse_proxy_sidecar_heartbeat_is_fresh_at(100, 121));
+        assert!(!reverse_proxy_sidecar_heartbeat_is_fresh_at(121, 100));
+    }
+
+    #[test]
+    fn openapi_auth_security_matches_runtime_auth_mode() {
+        let protected_path = format!("/{AGENT_API_VERSION}/projects/{{project}}/runtime");
+        let auth_spec = openapi_spec_json(39_393, true);
+        assert_eq!(
+            auth_spec["paths"][&protected_path]["get"]["security"][0]["bearerAuth"],
+            json!([])
+        );
+
+        let no_auth_spec = openapi_spec_json(39_393, false);
+        assert_eq!(
+            no_auth_spec["paths"][&protected_path]["get"]["security"],
+            json!([])
+        );
+        assert!(
+            no_auth_spec["paths"][format!("/{AGENT_API_VERSION}/health")]["get"]
+                .get("security")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn config_requires_reverse_proxy_sync_only_for_routable_services_or_endpoints() {
+        let mut config = LoopboxConfig::default();
+        config.projects.insert(
+            "demo".to_string(),
+            ProjectConfig {
+                dir: "/tmp/demo".to_string(),
+                ip: "127.0.0.2".to_string(),
+                services: vec![ServiceConfig {
+                    name: "worker".to_string(),
+                    runtime: ServiceRuntimeKind::Process,
+                    container: None,
+                    ports: Vec::new(),
+                    port: None,
+                    protocol: ProxyEndpointProtocol::Http1,
+                    command: "cargo run".to_string(),
+                    workdir: "/tmp/demo".to_string(),
+                    env_files: Vec::new(),
+                    depends_on: Vec::new(),
+                    autostart: false,
+                    health_path: None,
+                }],
+                default_open_service: Some("worker".to_string()),
+                proxy_traffic_capture_enabled: None,
+                proxy_traffic_capture_mode: None,
+                grpc_proto_paths: Vec::new(),
+                proxy_endpoints: Vec::new(),
+            },
+        );
+
+        assert!(!config_requires_reverse_proxy_sync(&config));
+
+        config.projects.get_mut("demo").unwrap().services[0].ports =
+            vec![crate::loopbox::ServicePortConfig {
+                port: 8080,
+                protocol: ProxyEndpointProtocol::Http1,
+                health_path: None,
+            }];
+        assert!(config_requires_reverse_proxy_sync(&config));
+
+        config.projects.get_mut("demo").unwrap().services[0].ports = Vec::new();
+        config
+            .global
+            .proxy_endpoints
+            .push(crate::loopbox::ProxyEndpointConfig {
+                name: "grpc".to_string(),
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 50060,
+                protocol: ProxyEndpointProtocol::GrpcH2c,
+                upstream_host: "127.0.0.2".to_string(),
+                upstream_port: 50051,
+                authority: None,
+                project_name: None,
+                service_name: Some("worker".to_string()),
+            });
+        assert!(config_requires_reverse_proxy_sync(&config));
+    }
+
+    #[test]
+    fn doctor_issue_dtos_include_level_project_message_and_fix_label() {
+        let issues = doctor_issue_dtos(vec![
+            DoctorIssue::warning_with_fix(
+                Some("demo".to_string()),
+                "Run setup.",
+                DoctorFixAction::ApplySystemSetup,
+            ),
+            DoctorIssue::info("Everything else looks good."),
+        ]);
+
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].level, "warning");
+        assert_eq!(issues[0].project.as_deref(), Some("demo"));
+        assert_eq!(issues[0].message, "Run setup.");
+        assert_eq!(issues[0].fix_label.as_deref(), Some("Setup System"));
+        assert_eq!(issues[1].level, "info");
+        assert_eq!(issues[1].project, None);
+        assert_eq!(issues[1].message, "Everything else looks good.");
+        assert_eq!(issues[1].fix_label, None);
+    }
+
+    #[test]
+    fn runtime_dto_reports_log_input_and_resource_attachment() {
+        let snapshot = ServiceRuntimeSnapshot {
+            project: "demo".to_string(),
+            service: "web".to_string(),
+            state: ServiceRuntimeState::Running,
+            pid: Some(123),
+            started_at: Some(456),
+            exit_code: None,
+            last_error: None,
+        };
+        let sample = ServiceResourceSample {
+            project_name: "demo".to_string(),
+            service_name: "web".to_string(),
+            sampled_at_unix_ms: 1_776_000_000_000,
+            sampled_at_utc: "2026-05-05 12:00:00 UTC".to_string(),
+            runtime: ServiceRuntimeKind::Process,
+            state: ServiceRuntimeState::Running,
+            pid: Some(123),
+            cpu_percent: Some(13.25),
+            memory_bytes: Some(128 * 1024 * 1024),
+            process_count: Some(4),
+            container_name: None,
+            unavailable_reason: None,
+        };
+
+        let dto = service_runtime_dto_from_snapshot(snapshot, true, true, true, Some(sample));
+
+        assert_eq!(dto.service, "web");
+        assert_eq!(dto.state, RuntimeStateDto::Running);
+        assert_eq!(dto.pid, Some(123));
+        assert!(dto.log_attached);
+        assert!(dto.input_attached);
+        assert!(dto.terminal_attached);
+        assert_eq!(
+            dto.resources.as_ref().and_then(|sample| sample.cpu_percent),
+            Some(13.25)
+        );
+    }
+
+    #[test]
+    fn service_input_target_rejects_empty_text_unknown_project_and_unknown_service() {
+        let mut config = LoopboxConfig::default();
+        config.projects.insert(
+            "demo".to_string(),
+            ProjectConfig {
+                dir: "/tmp/demo".to_string(),
+                ip: "127.0.0.2".to_string(),
+                services: vec![ServiceConfig {
+                    name: "web".to_string(),
+                    runtime: ServiceRuntimeKind::Process,
+                    container: None,
+                    ports: Vec::new(),
+                    port: None,
+                    protocol: ProxyEndpointProtocol::Http1,
+                    command: "cat".to_string(),
+                    workdir: "/tmp/demo".to_string(),
+                    env_files: Vec::new(),
+                    depends_on: Vec::new(),
+                    autostart: false,
+                    health_path: None,
+                }],
+                default_open_service: Some("web".to_string()),
+                proxy_traffic_capture_enabled: None,
+                proxy_traffic_capture_mode: None,
+                grpc_proto_paths: Vec::new(),
+                proxy_endpoints: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            resolve_service_input_target(
+                &config,
+                "demo",
+                "web",
+                &ServiceInputRequest {
+                    text: "   ".to_string()
+                },
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            resolve_service_input_target(
+                &config,
+                "missing",
+                "web",
+                &ServiceInputRequest {
+                    text: "x".to_string()
+                },
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            resolve_service_input_target(
+                &config,
+                "demo",
+                "missing",
+                &ServiceInputRequest {
+                    text: "x".to_string()
+                },
+            )
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn service_input_target_rejects_container_services() {
+        let mut config = LoopboxConfig::default();
+        config.projects.insert(
+            "demo".to_string(),
+            ProjectConfig {
+                dir: "/tmp/demo".to_string(),
+                ip: "127.0.0.2".to_string(),
+                services: vec![ServiceConfig {
+                    name: "db".to_string(),
+                    runtime: ServiceRuntimeKind::Container,
+                    container: Some(ContainerServiceConfig {
+                        image: "postgres:16".to_string(),
+                        args: Vec::new(),
+                        env: Vec::new(),
+                        volumes: Vec::new(),
+                        auto_remove: true,
+                    }),
+                    ports: Vec::new(),
+                    port: None,
+                    protocol: ProxyEndpointProtocol::Http1,
+                    command: String::new(),
+                    workdir: "/tmp/demo".to_string(),
+                    env_files: Vec::new(),
+                    depends_on: Vec::new(),
+                    autostart: false,
+                    health_path: None,
+                }],
+                default_open_service: Some("db".to_string()),
+                proxy_traffic_capture_enabled: None,
+                proxy_traffic_capture_mode: None,
+                grpc_proto_paths: Vec::new(),
+                proxy_endpoints: Vec::new(),
+            },
+        );
+
+        let err = resolve_service_input_target(
+            &config,
+            "demo",
+            "db",
+            &ServiceInputRequest {
+                text: "x".to_string(),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("does not support runtime input"));
     }
 
     #[test]

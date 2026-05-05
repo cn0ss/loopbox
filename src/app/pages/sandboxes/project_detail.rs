@@ -10,6 +10,7 @@ pub(super) fn ProjectDetail(
     mut selected_project: Signal<Option<String>>,
     pending_auto_apply: Signal<Option<String>>,
     mut runtime_tick: Signal<u64>,
+    mut current_page: Signal<Page>,
 ) -> Element {
     // ── Local State ──
     let mut active_tab = use_signal(|| DetailTab::Services);
@@ -22,6 +23,7 @@ pub(super) fn ProjectDetail(
     let mut env_search_query = use_signal(String::new);
     let mut env_search_index = use_signal(|| 0_usize);
     let mut service_key_inputs = use_signal(BTreeMap::<String, String>::new);
+    let mut resource_window = use_signal(|| "1h".to_string());
 
     let initial_project = project.clone();
     let mut edit_form = use_signal(move || ProjectEditForm::from_project(&initial_project));
@@ -30,72 +32,160 @@ pub(super) fn ProjectDetail(
 
     // ── Derived: Runtime Status (reactive via tick) ──
     let pn_status = project_name.clone();
-    let runtime_status = use_memo(move || {
+    let runtime_status = use_resource(move || {
+        let pn_status = pn_status.clone();
         let _tick = runtime_tick();
         let cfg = config();
-        let mut statuses = BTreeMap::new();
-        if let Some(proj) = cfg.projects.get(&pn_status) {
-            for service in &proj.services {
-                if let Ok(status) = loopbox::service_runtime_status(&cfg, &pn_status, &service.name)
-                {
-                    statuses.insert(service.name.clone(), status);
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut statuses = BTreeMap::new();
+                if let Some(proj) = cfg.projects.get(&pn_status) {
+                    for service in &proj.services {
+                        if let Ok(status) =
+                            loopbox::service_runtime_status(&cfg, &pn_status, &service.name)
+                        {
+                            statuses.insert(service.name.clone(), status);
+                        }
+                    }
                 }
-            }
+                statuses
+            })
+            .await
+            .unwrap_or_default()
         }
-        statuses
     });
 
     // ── Derived: Live Logs (reactive via tick) ──
     let pn_logs = project_name.clone();
-    let live_logs = use_memo(move || {
-        let _tick = runtime_tick();
-        let filter = log_filter();
-        let cfg = config();
-        let mut logs: Vec<(String, String)> = Vec::new();
-        if let Some(proj) = cfg.projects.get(&pn_logs) {
-            let selected_service = effective_log_selection(proj.services.as_slice(), filter);
-            let Some(selected_service) = selected_service else {
-                return logs;
+    let active_tab_for_live_logs = active_tab;
+    let live_logs = use_resource(move || {
+        let active = active_tab_for_live_logs() == DetailTab::Logs;
+        let tick = if active { Some(runtime_tick()) } else { None };
+        let filter = if active { Some(log_filter()) } else { None };
+        let cfg = if active { Some(config()) } else { None };
+        let pn_logs = pn_logs.clone();
+        async move {
+            let (Some(filter), Some(cfg)) = (filter, cfg) else {
+                return Vec::new();
             };
-            for service in &proj.services {
-                if selected_service != service.name {
-                    continue;
-                }
-                if let Ok(lines) = loopbox::service_logs(&pn_logs, &service.name) {
-                    for line in lines {
-                        logs.push((service.name.clone(), line));
+            let _ = tick;
+            tokio::task::spawn_blocking(move || {
+                let mut logs: Vec<(String, String)> = Vec::new();
+                if let Some(proj) = cfg.projects.get(&pn_logs) {
+                    let selected_service =
+                        effective_log_selection(proj.services.as_slice(), filter);
+                    let Some(selected_service) = selected_service else {
+                        return logs;
+                    };
+                    for service in &proj.services {
+                        if selected_service != service.name {
+                            continue;
+                        }
+                        if let Ok(lines) = loopbox::service_logs(&pn_logs, &service.name) {
+                            for line in lines {
+                                logs.push((service.name.clone(), line));
+                            }
+                        }
                     }
                 }
-            }
+                logs
+            })
+            .await
+            .unwrap_or_default()
         }
-        logs
     });
     let pn_log_count = project_name.clone();
-    let total_log_count = use_memo(move || {
-        let _tick = runtime_tick();
-        let cfg = config();
-        let mut count = 0_usize;
-        if let Some(proj) = cfg.projects.get(&pn_log_count) {
-            for service in &proj.services {
-                if let Ok(lines) = loopbox::service_logs(&pn_log_count, &service.name) {
-                    count = count.saturating_add(lines.len());
+    let active_tab_for_log_count = active_tab;
+    let total_log_count = use_resource(move || {
+        let active = active_tab_for_log_count() == DetailTab::Logs;
+        let tick = if active { Some(runtime_tick()) } else { None };
+        let cfg = if active { Some(config()) } else { None };
+        let pn_log_count = pn_log_count.clone();
+        async move {
+            let Some(cfg) = cfg else {
+                return 0;
+            };
+            let _ = tick;
+            tokio::task::spawn_blocking(move || {
+                let mut count = 0_usize;
+                if let Some(proj) = cfg.projects.get(&pn_log_count) {
+                    for service in &proj.services {
+                        if let Ok(lines) = loopbox::service_logs(&pn_log_count, &service.name) {
+                            count = count.saturating_add(lines.len());
+                        }
+                    }
                 }
-            }
+                count
+            })
+            .await
+            .unwrap_or_default()
         }
-        count
+    });
+    let pn_resources = project_name.clone();
+    let active_tab_for_resource_series = active_tab;
+    let resource_series = use_resource(move || {
+        let active = active_tab_for_resource_series() == DetailTab::Resources;
+        let tick = if active { Some(runtime_tick()) } else { None };
+        let window = if active {
+            Some(resource_window())
+        } else {
+            None
+        };
+        let pn_resources = pn_resources.clone();
+        async move {
+            let Some(window) = window else {
+                return Vec::new();
+            };
+            let _ = tick;
+            tokio::task::spawn_blocking(move || {
+                loopbox::resource_metrics_series_for_project(&pn_resources, None, &window, 2_000)
+                    .unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default()
+        }
+    });
+    let active_tab_for_resource_latest = active_tab;
+    let resource_latest = use_resource(move || {
+        let active = active_tab_for_resource_latest() == DetailTab::Resources;
+        let tick = if active { Some(runtime_tick()) } else { None };
+        let cfg = if active { Some(config()) } else { None };
+        async move {
+            let Some(cfg) = cfg else {
+                return BTreeMap::new();
+            };
+            let _ = tick;
+            tokio::task::spawn_blocking(move || {
+                loopbox::resource_metrics_latest_for_config(&cfg).unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default()
+        }
     });
 
     // ── Snapshots ──
     let tab = active_tab();
-    let status_snapshot = runtime_status();
+    let status_snapshot = runtime_status().unwrap_or_default();
     let service_key_inputs_snapshot = service_key_inputs();
-    let logs_snapshot = live_logs();
-    let total_logs_snapshot = total_log_count();
+    let logs_snapshot = live_logs().unwrap_or_default();
+    let total_logs_snapshot = total_log_count().unwrap_or_default();
+    let resource_window_snapshot = resource_window();
+    let resource_series_snapshot = resource_series().unwrap_or_default();
+    let resource_latest_snapshot = resource_latest().unwrap_or_default();
+    let resource_metrics_enabled = config().global.resource_metrics.enabled;
+    let resource_now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     let selected_log_service = effective_log_selection(project.services.as_slice(), log_filter());
-    let log_attached = selected_log_service
-        .as_ref()
-        .and_then(|service| loopbox::service_log_attached(&project_name, service).ok())
-        .unwrap_or(false);
+    let log_attached = if tab == DetailTab::Logs {
+        selected_log_service
+            .as_ref()
+            .and_then(|service| loopbox::service_log_attached(&project_name, service).ok())
+            .unwrap_or(false)
+    } else {
+        false
+    };
     let show_traffic_tab = project_detail_show_traffic_tab(&config(), &project_name);
     let grpc_proto_decode_enabled = true;
     let edit_snapshot = edit_form();
@@ -190,6 +280,7 @@ pub(super) fn ProjectDetail(
 
     let mut tab_items = vec![
         (DetailTab::Services, "Services"),
+        (DetailTab::Resources, "Resources"),
         (DetailTab::Logs, "Logs"),
         (DetailTab::Environment, "Environment"),
         (DetailTab::Config, "Config"),
@@ -223,6 +314,60 @@ pub(super) fn ProjectDetail(
                         }
                     } else {
                         span { class: "detail-status", "idle" }
+                    }
+                }
+                div { class: "detail-header-actions detail-agent-actions",
+                    button {
+                        class: "btn btn-sm btn-outline",
+                        onclick: {
+                            let prompt_project = project_name.clone();
+                            move |_| {
+                                loopbox::codex_agents_prefill_prompt(format!(
+                                    "Summarize sandbox `{prompt_project}` and its current runtime health."
+                                ));
+                                current_page.set(Page::Agents);
+                            }
+                        },
+                        "Ask Agent"
+                    }
+                    button {
+                        class: "btn btn-sm btn-outline",
+                        onclick: {
+                            let prompt_project = project_name.clone();
+                            move |_| {
+                                loopbox::codex_agents_prefill_prompt(format!(
+                                    "Explain recent failing logs for sandbox `{prompt_project}`. Use Loopbox log tools with a small limit first."
+                                ));
+                                current_page.set(Page::Agents);
+                            }
+                        },
+                        "Explain Logs"
+                    }
+                    button {
+                        class: "btn btn-sm btn-outline",
+                        onclick: {
+                            let prompt_project = project_name.clone();
+                            move |_| {
+                                loopbox::codex_agents_prefill_prompt(format!(
+                                    "Diagnose recent traffic for sandbox `{prompt_project}` and identify suspicious failures."
+                                ));
+                                current_page.set(Page::Agents);
+                            }
+                        },
+                        "Diagnose Traffic"
+                    }
+                    button {
+                        class: "btn btn-sm btn-outline",
+                        onclick: {
+                            let prompt_project = project_name.clone();
+                            move |_| {
+                                loopbox::codex_agents_prefill_prompt(format!(
+                                    "Help create a similar Loopbox sandbox to `{prompt_project}`. Read its config first and ask before creating anything."
+                                ));
+                                current_page.set(Page::Agents);
+                            }
+                        },
+                        "Create Similar"
                     }
                 }
             }
@@ -333,20 +478,20 @@ pub(super) fn ProjectDetail(
                                 let runtime_label = project_detail_service_runtime_label(service);
                                 let execution_label = project_detail_service_execution_label(service)
                                     .unwrap_or_else(|| format!("$ {}", service.command));
-                                let is_running = runtime.is_some_and(|s| {
-                                    matches!(
-                                        s.state,
-                                        ServiceRuntimeState::Running
-                                            | ServiceRuntimeState::Starting
-                                            | ServiceRuntimeState::Unhealthy
-                                    )
-                                });
-                                let is_process_runtime =
-                                    matches!(service.runtime, crate::loopbox::ServiceRuntimeKind::Process);
-                                let input_attached = is_running
-                                    && is_process_runtime
-                                    && loopbox::service_input_attached(&project_name, &service.name)
-                                        .unwrap_or(false);
+                                let runtime_state = runtime
+                                    .map(|snapshot| snapshot.state)
+                                    .unwrap_or(ServiceRuntimeState::Stopped);
+                                let input_attached_probe = loopbox::service_input_attached(&project_name, &service.name)
+                                    .unwrap_or(false);
+                                let terminal_attached_probe = loopbox::service_terminal_attached(&project_name, &service.name)
+                                    .unwrap_or(false);
+                                let action_flags = runtime_service_action_flags(
+                                    service,
+                                    runtime_state,
+                                    input_attached_probe,
+                                    terminal_attached_probe,
+                                );
+                                let is_process_runtime = action_flags.is_process;
                                 let key_input_value = service_key_inputs_snapshot
                                     .get(&service.name)
                                     .cloned()
@@ -379,9 +524,10 @@ pub(super) fn ProjectDetail(
                                         }
                                         div { class: "svc-card-cmd", "{execution_label}" }
                                         div { class: "svc-card-actions",
-                                            if is_running {
+                                            if action_flags.can_stop || action_flags.can_restart {
                                                 button {
                                                     class: "btn btn-sm btn-outline",
+                                                    disabled: !action_flags.can_stop,
                                                     onclick: {
                                                         let pn = project_name.clone();
                                                         let svc = service.name.clone();
@@ -399,6 +545,7 @@ pub(super) fn ProjectDetail(
                                                 }
                                                 button {
                                                     class: "btn btn-sm btn-outline",
+                                                    disabled: !action_flags.can_restart,
                                                     onclick: {
                                                         let pn = project_name.clone();
                                                         let svc = service.name.clone();
@@ -415,7 +562,39 @@ pub(super) fn ProjectDetail(
                                                     "Restart"
                                                 }
                                                 if is_process_runtime {
-                                                    if input_attached {
+                                                    if action_flags.can_terminal {
+                                                        button {
+                                                            class: "btn btn-sm btn-outline",
+                                                            onclick: {
+                                                                let pn = project_name.clone();
+                                                                let svc = service.name.clone();
+                                                                let terminal_attached = terminal_attached_probe;
+                                                                move |_| {
+                                                                    if terminal_attached {
+                                                                        let title = format!("Terminal — {svc} ({pn})");
+                                                                        terminal_window::push_config(TerminalWindowConfig {
+                                                                            project_name: pn.clone(),
+                                                                            service_name: svc.clone(),
+                                                                        });
+                                                                        let dom = VirtualDom::new(terminal_window::TerminalPopoutWindow);
+                                                                        let cfg = dioxus::desktop::Config::new().with_window(
+                                                                            dioxus::desktop::WindowBuilder::new()
+                                                                                .with_title(title)
+                                                                                .with_inner_size(dioxus::desktop::LogicalSize::new(940.0, 620.0)),
+                                                                        );
+                                                                        dioxus::desktop::window().new_window(dom, cfg);
+                                                                    } else {
+                                                                        match loopbox::open_terminal_for_service(&config(), &pn, &svc, false) {
+                                                                            Ok(msg) => notice.set(Some(Notice::info(msg))),
+                                                                            Err(err) => notice.set(Some(Notice::error(err))),
+                                                                        }
+                                                                    }
+                                                                }
+                                                            },
+                                                            "Terminal"
+                                                        }
+                                                    }
+                                                    if action_flags.can_attach {
                                                         button {
                                                             class: "btn btn-sm btn-outline",
                                                             onclick: {
@@ -431,7 +610,7 @@ pub(super) fn ProjectDetail(
                                                             "Attach"
                                                         }
                                                     }
-                                                    if input_attached {
+                                                    if action_flags.can_send_input {
                                                         div { class: "svc-input-control",
                                                             input {
                                                                 class: "field-input svc-key-input",
@@ -488,11 +667,15 @@ pub(super) fn ProjectDetail(
                                                     } else {
                                                         span {
                                                             class: "svc-input-hint",
-                                                            "Key input unavailable for this process instance. Restart it from here to re-attach stdin."
+                                                            if terminal_attached_probe {
+                                                                "Integrated terminal is attached for this process instance."
+                                                            } else {
+                                                                "Restart this process to attach the integrated terminal."
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            } else {
+                                            } else if action_flags.can_start {
                                                 button {
                                                     class: "btn btn-sm btn-primary",
                                                     onclick: {
@@ -510,33 +693,43 @@ pub(super) fn ProjectDetail(
                                                     },
                                                     "Start"
                                                 }
-                                                button {
-                                                    class: "btn btn-sm btn-outline",
-                                                    onclick: {
-                                                        let pn = project_name.clone();
-                                                        let svc = service.name.clone();
-                                                        move |_| {
-                                                            match loopbox::open_terminal_for_service(&config(), &pn, &svc, false) {
-                                                                Ok(msg) => notice.set(Some(Notice::info(msg))),
-                                                                Err(err) => notice.set(Some(Notice::error(err))),
+                                                if action_flags.can_terminal {
+                                                    button {
+                                                        class: "btn btn-sm btn-outline",
+                                                        onclick: {
+                                                            let pn = project_name.clone();
+                                                            let svc = service.name.clone();
+                                                            move |_| {
+                                                                match loopbox::open_terminal_for_service(&config(), &pn, &svc, false) {
+                                                                    Ok(msg) => notice.set(Some(Notice::info(msg))),
+                                                                    Err(err) => notice.set(Some(Notice::error(err))),
+                                                                }
                                                             }
-                                                        }
-                                                    },
-                                                    "Terminal"
+                                                        },
+                                                        "Terminal"
+                                                    }
                                                 }
-                                                button {
-                                                    class: "btn btn-sm btn-outline",
-                                                    onclick: {
-                                                        let pn = project_name.clone();
-                                                        let svc = service.name.clone();
-                                                        move |_| {
-                                                            match loopbox::open_terminal_for_service(&config(), &pn, &svc, true) {
-                                                                Ok(msg) => notice.set(Some(Notice::success(msg))),
-                                                                Err(err) => notice.set(Some(Notice::error(err))),
+                                                if action_flags.can_run {
+                                                    button {
+                                                        class: "btn btn-sm btn-outline",
+                                                        onclick: {
+                                                            let pn = project_name.clone();
+                                                            let svc = service.name.clone();
+                                                            move |_| {
+                                                                match loopbox::open_terminal_for_service(&config(), &pn, &svc, true) {
+                                                                    Ok(msg) => notice.set(Some(Notice::success(msg))),
+                                                                    Err(err) => notice.set(Some(Notice::error(err))),
+                                                                }
                                                             }
-                                                        }
-                                                    },
-                                                    "Run"
+                                                        },
+                                                        "Run"
+                                                    }
+                                                }
+                                                if !is_process_runtime {
+                                                    span {
+                                                        class: "svc-input-hint",
+                                                        "Container services start through Docker and do not support terminal input."
+                                                    }
                                                 }
                                             }
                                             if service_has_open_url {
@@ -574,6 +767,133 @@ pub(super) fn ProjectDetail(
                     config,
                     notice,
                     runtime_tick,
+                }
+            }
+
+            // ════════════════════════════════════════
+            // TAB: Resources
+            // ════════════════════════════════════════
+            if tab == DetailTab::Resources {
+                div { class: "tab-content",
+                    div { class: "resource-toolbar",
+                        div { class: "seg-control",
+                            for window in ["15m", "1h", "24h", "7d"] {
+                                button {
+                                    key: "{window}",
+                                    class: if resource_window_snapshot == window { "seg-btn seg-btn-on" } else { "seg-btn" },
+                                    onclick: move |_| resource_window.set(window.to_string()),
+                                    "{window}"
+                                }
+                            }
+                        }
+                        span { class: "runtime-project-meta", "{resource_series_snapshot.len()} samples" }
+                    }
+
+                    if !resource_metrics_enabled {
+                        div { class: "empty-state",
+                            p { class: "empty-state-text", "Resource metrics collection is disabled in Settings." }
+                        }
+                    } else if resource_series_snapshot.is_empty() {
+                        div { class: "empty-state",
+                            p { class: "empty-state-text", "No resource samples are available for the selected window." }
+                        }
+                    }
+
+                    div { class: "resource-card-grid",
+                        for service in &project.services {
+                            {{
+                                let sample_key = format!("{project_name}::{}", service.name);
+                                let latest = resource_latest_snapshot.get(&sample_key);
+                                let service_samples = resource_series_snapshot
+                                    .iter()
+                                    .filter(|sample| sample.service_name == service.name)
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                let cpu_points = resource_sparkline_points(
+                                    &service_samples,
+                                    ResourceMetricKind::Cpu,
+                                    220.0,
+                                    48.0,
+                                );
+                                let memory_points = resource_sparkline_points(
+                                    &service_samples,
+                                    ResourceMetricKind::Memory,
+                                    220.0,
+                                    48.0,
+                                );
+                                let cpu_label = format_cpu_percent(latest.and_then(|sample| sample.cpu_percent));
+                                let memory_label = format_memory_bytes(latest.and_then(|sample| sample.memory_bytes));
+                                let count_label = latest
+                                    .and_then(|sample| sample.process_count)
+                                    .map(|count| format!("{count} proc"))
+                                    .unwrap_or_else(|| "n/a".to_string());
+                                let age_label = format_sample_age(resource_now_ms, latest);
+                                let unavailable = latest.and_then(|sample| sample.unavailable_reason.clone());
+                                let stale_note = if resource_metrics_enabled
+                                    && latest.is_some()
+                                    && service_samples.is_empty()
+                                {
+                                    Some(format!(
+                                        "No {resource_window_snapshot} samples; latest {age_label}"
+                                    ))
+                                } else {
+                                    None
+                                };
+
+                                rsx! {
+                                    div { class: "resource-card", key: "{service.name}",
+                                        div { class: "resource-card-head",
+                                            div {
+                                                h3 { "{service.name}" }
+                                                span { class: "runtime-project-meta", "{age_label}" }
+                                            }
+                                            span { class: "chip", "{project_detail_service_runtime_label(service).unwrap_or(\"process\")}" }
+                                        }
+                                        if let Some(reason) = unavailable {
+                                            p { class: "runtime-inline-error", "{reason}" }
+                                        }
+                                        if let Some(note) = stale_note {
+                                            p { class: "runtime-inline-hint", "{note}" }
+                                        }
+                                        div { class: "resource-metric-grid",
+                                            div {
+                                                span { class: "resource-summary-label", "CPU" }
+                                                strong { "{cpu_label}" }
+                                            }
+                                            div {
+                                                span { class: "resource-summary-label", "Memory" }
+                                                strong { "{memory_label}" }
+                                            }
+                                            div {
+                                                span { class: "resource-summary-label", "Workers" }
+                                                strong { "{count_label}" }
+                                            }
+                                            div {
+                                                span { class: "resource-summary-label", "Samples" }
+                                                strong { "{service_samples.len()}" }
+                                            }
+                                        }
+                                        div { class: "resource-spark-row",
+                                            div { class: "resource-spark resource-spark-cpu",
+                                                svg { view_box: "0 0 220 48", preserve_aspect_ratio: "none",
+                                                    if !cpu_points.is_empty() {
+                                                        polyline { points: "{cpu_points}" }
+                                                    }
+                                                }
+                                            }
+                                            div { class: "resource-spark resource-spark-memory",
+                                                svg { view_box: "0 0 220 48", preserve_aspect_ratio: "none",
+                                                    if !memory_points.is_empty() {
+                                                        polyline { points: "{memory_points}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }}
+                        }
+                    }
                 }
             }
 
@@ -1431,7 +1751,7 @@ pub(super) fn ProjectDetail(
                                                         }
                                                     }
 
-                                                    match loopbox::sync_reverse_proxy(&config()) {
+                                                    match loopbox::sync_reverse_proxy_sidecar(&config()) {
                                                         Ok(_) => notice.set(Some(Notice::success(format!(
                                                             "gRPC proto paths updated for '{pn}'. Saved {}.",
                                                             path.display()
@@ -1697,7 +2017,7 @@ pub(super) fn ProjectDetail(
                                                                 }
                                                             }
 
-                                                            match loopbox::sync_reverse_proxy(&config()) {
+                                                            match loopbox::sync_reverse_proxy_sidecar(&config()) {
                                                                 Ok(_) => notice.set(Some(Notice::success(format!(
                                                                     "Proxy endpoints updated for '{pn}'. Saved {}.",
                                                                     path.display()
@@ -1877,45 +2197,6 @@ pub(super) fn ProjectDetail(
             }
         }
     }
-}
-
-fn decode_service_input_sequence(raw: &str) -> Result<String, String> {
-    let mut decoded = String::new();
-    let mut chars = raw.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            decoded.push(ch);
-            continue;
-        }
-        let Some(escape) = chars.next() else {
-            return Err("Invalid key sequence: trailing backslash.".to_string());
-        };
-        match escape {
-            '\\' => decoded.push('\\'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            '0' => decoded.push('\0'),
-            'x' => {
-                let hi = chars.next().ok_or_else(|| {
-                    "Invalid key sequence: expected two hex digits after \\x.".to_string()
-                })?;
-                let lo = chars.next().ok_or_else(|| {
-                    "Invalid key sequence: expected two hex digits after \\x.".to_string()
-                })?;
-                let value = u8::from_str_radix(&format!("{hi}{lo}"), 16).map_err(|_| {
-                    "Invalid key sequence: expected hex digits after \\x.".to_string()
-                })?;
-                decoded.push(char::from(value));
-            }
-            _ => {
-                return Err(format!(
-                    "Invalid key sequence: unsupported escape '\\{escape}'. Use \\\\, \\n, \\r, \\t, \\0, or \\xNN."
-                ));
-            }
-        }
-    }
-    Ok(decoded)
 }
 
 #[cfg(test)]

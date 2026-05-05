@@ -1,6 +1,13 @@
 use std::collections::HashSet;
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcessResourceUsage {
+    pub cpu_percent: f64,
+    pub memory_bytes: u64,
+    pub process_count: usize,
+}
+
 pub fn kill_process(pid: u32, signal: &str) -> Result<(), String> {
     if pid == 0 {
         return Err("Refusing to signal invalid pid 0.".to_string());
@@ -151,4 +158,86 @@ pub fn process_tree_pids(root_pid: u32) -> Vec<u32> {
 
 pub fn process_group_is_gone(pgid: u32, observed_members: &[u32]) -> bool {
     process_group_pids(pgid).is_empty() && observed_members.iter().all(|pid| !pid_exists(*pid))
+}
+
+pub fn process_tree_resource_usage(root_pid: u32) -> Result<ProcessResourceUsage, String> {
+    let pids = process_tree_pids(root_pid);
+    if pids.is_empty() {
+        return Err(format!("No live process tree found for pid {root_pid}."));
+    }
+
+    let output = Command::new("/bin/ps")
+        .env("LC_ALL", "C")
+        .arg("-o")
+        .arg("pcpu=")
+        .arg("-o")
+        .arg("rss=")
+        .arg("-p")
+        .arg(
+            pids.iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+        .output()
+        .map_err(|err| format!("Failed to inspect resource usage for pid {root_pid}: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Resource usage inspection failed for pid {root_pid}."
+        ));
+    }
+    process_resource_usage_from_ps_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn process_resource_usage_from_ps_output(stdout: &str) -> Result<ProcessResourceUsage, String> {
+    let mut cpu_percent = 0.0_f64;
+    let mut memory_bytes = 0_u64;
+    let mut process_count = 0_usize;
+
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(cpu_raw) = parts.next() else {
+            continue;
+        };
+        let Some(rss_raw) = parts.next() else {
+            continue;
+        };
+        let cpu = parse_ps_cpu_percent(cpu_raw)
+            .ok_or_else(|| format!("Invalid CPU value '{cpu_raw}' in ps output."))?;
+        let rss_kb = rss_raw
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid RSS value '{rss_raw}' in ps output."))?;
+        cpu_percent += cpu;
+        memory_bytes = memory_bytes.saturating_add(rss_kb.saturating_mul(1024));
+        process_count = process_count.saturating_add(1);
+    }
+
+    if process_count == 0 {
+        return Err("Resource usage inspection returned no process rows.".to_string());
+    }
+
+    Ok(ProcessResourceUsage {
+        cpu_percent,
+        memory_bytes,
+        process_count,
+    })
+}
+
+fn parse_ps_cpu_percent(raw: &str) -> Option<f64> {
+    raw.trim().replace(',', ".").parse::<f64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_resource_usage_from_ps_output;
+
+    #[test]
+    fn process_resource_usage_from_ps_output_accepts_localized_cpu_decimal_comma() {
+        let usage = process_resource_usage_from_ps_output("  0,0  1024\n 12,5 2048\n")
+            .expect("localized ps output should parse");
+
+        assert_eq!(usage.cpu_percent, 12.5);
+        assert_eq!(usage.memory_bytes, 3 * 1024 * 1024);
+        assert_eq!(usage.process_count, 2);
+    }
 }

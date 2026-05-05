@@ -121,9 +121,9 @@ fn platform_support_label() -> &'static str {
 
 fn platform_support_summary() -> &'static str {
     if cfg!(target_os = "macos") {
-        "Loopback aliases, hosts management, pf redirects, Sparkle updates, Terminal attach, and PTY input are available on macOS."
+        "Loopback aliases, hosts management, pf redirects, Sparkle updates, and persistent integrated terminal sessions are available on macOS."
     } else if cfg!(target_os = "windows") {
-        "Hosts management, loopback aliases, netsh portproxy redirects, and standard process runtime are available. PTY attach/input and auto-update are not yet available on Windows."
+        "Hosts management, loopback aliases, netsh portproxy redirects, and standard process runtime are available. Integrated terminal sessions and auto-update are not yet available on Windows."
     } else {
         "Loopbox currently ships platform implementations for macOS and experimental Windows builds."
     }
@@ -135,7 +135,7 @@ fn platform_capability_rows() -> Vec<(&'static str, &'static str)> {
             ("Loopback aliases", "lo0 aliases"),
             ("Domain-only HTTP", "pf redirect"),
             ("Hosts file", "/etc/hosts"),
-            ("Terminal attach", "Terminal.app + PTY"),
+            ("Integrated terminal", "persistent PTY"),
             ("Updates", "Sparkle"),
         ]
     } else if cfg!(target_os = "windows") {
@@ -143,7 +143,7 @@ fn platform_capability_rows() -> Vec<(&'static str, &'static str)> {
             ("Loopback aliases", "netsh interface ipv4"),
             ("Domain-only HTTP", "netsh portproxy"),
             ("Hosts file", r"C:\Windows\System32\drivers\etc\hosts"),
-            ("Terminal attach", "standard logs only"),
+            ("Integrated terminal", "not available"),
             ("Updates", "manual download"),
         ]
     } else {
@@ -151,7 +151,7 @@ fn platform_capability_rows() -> Vec<(&'static str, &'static str)> {
             ("Loopback aliases", "not available"),
             ("Domain-only HTTP", "not available"),
             ("Hosts file", "platform dependent"),
-            ("Terminal attach", "not available"),
+            ("Integrated terminal", "not available"),
             ("Updates", "not available"),
         ]
     }

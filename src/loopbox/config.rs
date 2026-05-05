@@ -1,8 +1,9 @@
 use super::projects::normalize_domain_suffix;
 use super::{
     default_agent_api_port, default_domain_suffix, default_ip_base, enforce_traffic_capture_mode,
-    service_ports, LoopboxConfig, ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol,
-    ServicePortConfig, ServiceRuntimeKind,
+    resource_metrics::sanitize_resource_metrics_settings, service_ports, LoopboxConfig,
+    ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol, ServicePortConfig,
+    ServiceRuntimeKind,
 };
 use std::env;
 use std::fs;
@@ -125,6 +126,7 @@ fn normalize_config(config: &mut LoopboxConfig) {
     if config.global.agent_api.port == 0 {
         config.global.agent_api.port = default_agent_api_port();
     }
+    sanitize_resource_metrics_settings(&mut config.global.resource_metrics);
 
     // Legacy migration: bool preview flag -> capture mode.
     if config.global.proxy_traffic.capture_body_preview
