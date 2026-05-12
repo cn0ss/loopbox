@@ -2122,12 +2122,9 @@ mod tests {
         );
 
         let target = launch_primary_target(&config, "demo").expect("launch target");
-        let expected_url = loopbox::open_url_for(
-            &config,
-            "demo",
-            OpenTarget::Service("web".to_string()),
-        )
-        .expect("canonical open url");
+        let expected_url =
+            loopbox::open_url_for(&config, "demo", OpenTarget::Service("web".to_string()))
+                .expect("canonical open url");
 
         assert_eq!(target.service_name, "web");
         assert_eq!(target.url, expected_url);
