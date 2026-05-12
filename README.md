@@ -31,9 +31,12 @@ gateway.myapp.localhost   →  127.0.0.2:3000
 - **Reverse Proxy Layers** — host-based HTTP routing (`service.project.localhost`) plus loopback endpoint listeners (`grpc_h2c`, `tcp_passthrough`); falls back to `:18080` with pf redirect if `:80` is unavailable
 - **Docker Management** — bind containers to a sandbox IP (for example `127.0.0.30`) so multiple projects can reuse the same container ports without collisions
 - **Multi-Port Services** — each service can define multiple `port + protocol + health` entries (`http1`, `grpc_h2c`, `tcp_passthrough`)
+- **Dependency Map / Topology** — per-sandbox service graph with declared dependencies, ingress/proxy endpoint edges, runtime health, incidents, resource metrics, and recent traffic overlays
 - **Process Runtime** — start/stop/restart individually or all at once; PID registry survives app restarts
 - **Live Logs** — combined stdout/stderr per service, tailed in-app
 - **HTTP + gRPC Traffic Inspector** — full request/response capture with filtering, HAR export, and body preview
+- **Incident Timeline** — observe-only diagnostic tab that correlates runtime transitions, failed/slow requests, resource pressure, and log excerpts without restarting or mutating services
+- **Diagnosis Sessions** — start a durable agent-assisted diagnosis from a sandbox, runtime alert, or incident; Loopbox captures bounded evidence, opens Agents with a targeted prompt, links the Codex thread, and tracks resolution
 - **Agent API Audit Log** — captures each local Agent API request/response (headers, body snapshots, status, latency) in a dedicated UI tab
 - **gRPC Proto Decode** — optional project proto paths for typed payload decoding via `protoc` with `--decode_raw` fallback
 - **Command Discovery** — scans `package.json` recursively; scores suggestions by service name; detects package manager from lockfiles
@@ -42,7 +45,7 @@ gateway.myapp.localhost   →  127.0.0.2:3000
 - **Terminal Integration** — process services run with a persistent macOS PTY session; the in-app terminal reconnects after Loopbox restarts, with native Terminal.app kept as a legacy fallback
 - **Health Checks** — TCP port reachability + optional HTTP path and gRPC health target checks; `running` vs `unhealthy` state distinction
 - **Doctor** — validates IPs, `/etc/hosts`, loopback aliases, DNS, ports, and env files; includes direct fix actions
-- **Local Agent API** — localhost HTTP API for tools like Codex/Claude/Cursor (doctor, projects, create/update config, runtime, logs, requests, service input, start/stop/restart; no delete endpoint) without manual copy/paste between app and terminal
+- **Local Agent API** — localhost HTTP API for tools like Codex/Claude/Cursor (doctor, projects, create/update config, runtime, incidents, logs, requests, resources, service input, start/stop/restart; no delete endpoint) without manual copy/paste between app and terminal
 
 ## Licensing
 
@@ -61,6 +64,7 @@ Loopbox exposes a local API for agent clients while the app is running.
 - Token file: `~/.config/loopbox/agent-api-token` (when auth is enabled)
 - Default URL: `http://127.0.0.1:39393`
 - OpenAPI endpoint: `/v1/openapi.json` (auto-generated at runtime)
+- Incident timeline endpoint: `/v1/projects/{project}/incidents?service=&window=&limit=`
 - Runtime input endpoint: `/v1/projects/{project}/services/{service}/input` for attached process services
 - Edit enable/auth/port in **Settings → Agent API**
 
@@ -81,9 +85,10 @@ If another `dx` binary is earlier in `PATH`, use `$HOME/.cargo/bin/dx` directly 
 The development default does not compile Ghostty's native library. To build the high-fidelity `libghostty-vt` adapter, install Zig 0.15.2 and run with `--features ghostty-vt`; the build will fetch the pinned Ghostty source unless `GHOSTTY_SOURCE_DIR` points at a local checkout.
 
 1. Click **New Sandbox** → pick a project directory
-2. Add services or hit **Auto Detect** to fill from `package.json` scripts
-3. **System → Setup System** → confirm the admin prompt (one-time, reversible)
-4. **Start** services, open URLs, tail logs
+2. Let Loopbox detect services, or edit the generated commands, ports, and dependencies
+3. Review preflight checks, then click **Add Sandbox**
+4. In **Launch**, click **Launch** to apply system routing, start services, and open the primary URL
+5. Open the sandbox detail page to tail logs, inspect traffic, and adjust config
 
 ## Config
 
@@ -165,6 +170,8 @@ Service protocols: `http1`, `grpc_h2c`, `tcp_passthrough`.
 Loopbox still accepts legacy single-port service fields (`port`, `protocol`, `health_path`) and normalizes them into `services.ports` on save/load.
 
 Resource metrics are sampled while Loopbox or the headless Agent API is running. `sample_interval_secs` is clamped to 2-60 seconds, `retention_days` to 1-90 days, and `max_storage_mb` to 25-5,000 MB.
+
+Incident Timeline runtime transitions are stored under `~/.config/loopbox/incident-events/*.jsonl` with fixed 7-day cleanup. Traffic, resource, and log evidence is derived from existing Loopbox stores when the timeline is read.
 
 For gRPC payload decoding, configure `grpc_proto_paths` and ensure `protoc` is available in your `PATH`.
 

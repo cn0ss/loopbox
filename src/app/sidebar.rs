@@ -89,6 +89,11 @@ pub(super) fn render_sidebar(
                     onclick: move |_| current_page.set(Page::Runtime),
                     span { class: "nav-label", "Runtime" }
                 }
+                button {
+                    class: if page == Page::Diagnostics { "nav-link active" } else { "nav-link" },
+                    onclick: move |_| current_page.set(Page::Diagnostics),
+                    span { class: "nav-label", "Diagnostics" }
+                }
                 if show_agent_api_audit_tab {
                     button {
                         class: if page == Page::AgentApiAudit { "nav-link active" } else { "nav-link" },

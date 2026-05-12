@@ -130,7 +130,7 @@ pub(super) fn container_runtime_status(
     let mut store = runtime_store()
         .lock()
         .map_err(|_| "Runtime store lock poisoned.".to_string())?;
-    store.history.insert(key.to_string(), snapshot.clone());
+    upsert_runtime_history(&mut store, key.to_string(), snapshot.clone());
     Ok(snapshot)
 }
 

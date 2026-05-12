@@ -9,7 +9,7 @@ mod tray;
 mod utils;
 
 use self::models::{Notice, Page, RuntimeFilter, SetupStatus};
-use self::pages::{agent_api_audit, agents, runtime, sandboxes, settings, system};
+use self::pages::{agent_api_audit, agents, diagnostics, runtime, sandboxes, settings, system};
 use self::sidebar::render_sidebar;
 use self::utils::{apply_setup_result, preview_project_name, preview_service_name, preview_suffix};
 use crate::loopbox;
@@ -516,6 +516,14 @@ pub(crate) fn App() -> Element {
                     runtime_filter_value,
                     runtime_filter,
                     runtime_search,
+                    config,
+                    notice,
+                    runtime_tick,
+                )}
+
+                {diagnostics::render_diagnostics_page(
+                    page,
+                    current_page,
                     config,
                     notice,
                     runtime_tick,

@@ -397,6 +397,9 @@ mod traffic {
         let Ok(mut store) = proxy_traffic_store().lock() else {
             return;
         };
+        if store.next_id == 0 {
+            store.next_id = max_proxy_traffic_event_id_on_disk().unwrap_or(0);
+        }
         store.next_id = store.next_id.wrapping_add(1);
         event.id = store.next_id;
         store.events.push_back(event);
@@ -465,6 +468,62 @@ mod traffic {
                 writes_since_cleanup = 0;
                 let _ = cleanup_proxy_traffic_storage(&storage_dir, retention_days, max_storage_mb);
             }
+        }
+    }
+
+    fn max_proxy_traffic_event_id_on_disk() -> Result<u64, String> {
+        let storage_dir = proxy_traffic_dir();
+        if !storage_dir.exists() {
+            return Ok(0);
+        }
+
+        let entries = fs::read_dir(&storage_dir).map_err(|err| {
+            format!(
+                "Failed to list proxy traffic dir {}: {err}",
+                storage_dir.display()
+            )
+        })?;
+        let mut max_id = 0_u64;
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if parse_day_from_traffic_filename(name).is_none() {
+                continue;
+            }
+
+            let file = match File::open(&path) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let Ok(line) = line else {
+                    continue;
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(event) = serde_json::from_str::<ProxyTrafficEvent>(&line) else {
+                    continue;
+                };
+                max_id = max_id.max(event.id);
+            }
+        }
+        Ok(max_id)
+    }
+
+    #[cfg(test)]
+    fn reset_proxy_traffic_store_for_test() {
+        if let Ok(mut store) = proxy_traffic_store().lock() {
+            *store = ProxyTrafficStore::default();
         }
     }
 
@@ -1059,6 +1118,27 @@ mod traffic {
 
             assert!(events.iter().any(|event| event.path == "/memory"));
             assert!(events.iter().any(|event| event.path == "/disk"));
+        }
+
+        #[test]
+        fn proxy_traffic_push_seeds_next_id_from_persisted_max() {
+            let _scope = traffic_test_dir("seed-next-id");
+            let project = "seed-demo";
+            let mut persisted_event = sample_proxy_event(project, "web", "/persisted");
+            persisted_event.id = 41;
+            append_proxy_traffic_event_to_disk_for_test(&persisted_event)
+                .expect("write persisted event");
+            reset_proxy_traffic_store_for_test();
+
+            push_proxy_traffic_event(sample_proxy_event(project, "web", "/memory"), 100);
+
+            let events = proxy_traffic_events_for_project_with_persisted(project, Some("web"), 20)
+                .expect("load merged traffic");
+            let memory_event = events
+                .iter()
+                .find(|event| event.path == "/memory")
+                .expect("memory event");
+            assert_eq!(memory_event.id, 42);
         }
 
         #[test]

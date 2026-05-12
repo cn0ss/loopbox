@@ -12,6 +12,7 @@ pub(in crate::app) fn render_agents_page(
     runtime_tick: Signal<u64>,
 ) -> Element {
     let mut composer = use_signal(String::new);
+    let mut composer_diagnosis_session_id = use_signal(|| None::<String>);
     let mut show_events = use_signal(|| false);
     let mut auto_connect_attempted = use_signal(|| false);
     let mut last_page_was_agents = use_signal(|| false);
@@ -41,13 +42,16 @@ pub(in crate::app) fn render_agents_page(
         }
     });
     let prefilled_prompt = snapshot.prefilled_prompt.clone();
+    let prefilled_diagnosis_session_id = snapshot.prefilled_diagnosis_session_id.clone();
     use_effect(move || {
         if let Some(prompt) = prefilled_prompt.clone() {
             composer.set(prompt);
+            composer_diagnosis_session_id.set(prefilled_diagnosis_session_id.clone());
         }
     });
 
     let composer_value = composer();
+    let diagnosis_session_id_snapshot = composer_diagnosis_session_id();
     let show_event_log = show_events();
     let can_send = snapshot.enabled && !composer_value.trim().is_empty();
     let can_interrupt = snapshot.active_turn_id.is_some();
@@ -460,15 +464,27 @@ pub(in crate::app) fn render_agents_page(
                                     if text.is_empty() {
                                         return;
                                     }
-                                    match loopbox::codex_agents_send_message(&config(), None, text) {
-                                        Ok(()) => composer.set(String::new()),
+                                    let result = if let Some(session_id) = composer_diagnosis_session_id() {
+                                        loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
+                                    } else {
+                                        loopbox::codex_agents_send_message(&config(), None, text)
+                                    };
+                                    match result {
+                                        Ok(()) => {
+                                            composer.set(String::new());
+                                            composer_diagnosis_session_id.set(None);
+                                        }
                                         Err(err) => notice.set(Some(Notice::error(err))),
                                     }
                                 }
                             },
                         }
                         div { class: "agents-composer-actions",
-                            span { "Cmd/Ctrl Enter" }
+                            if diagnosis_session_id_snapshot.is_some() {
+                                span { class: "agents-composer-context", "Diagnosis" }
+                            } else {
+                                span { "Cmd/Ctrl Enter" }
+                            }
                             button {
                                 class: "btn btn-primary",
                                 disabled: !can_send,
@@ -477,8 +493,16 @@ pub(in crate::app) fn render_agents_page(
                                     if text.is_empty() {
                                         return;
                                     }
-                                    match loopbox::codex_agents_send_message(&config(), None, text) {
-                                        Ok(()) => composer.set(String::new()),
+                                    let result = if let Some(session_id) = composer_diagnosis_session_id() {
+                                        loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
+                                    } else {
+                                        loopbox::codex_agents_send_message(&config(), None, text)
+                                    };
+                                    match result {
+                                        Ok(()) => {
+                                            composer.set(String::new());
+                                            composer_diagnosis_session_id.set(None);
+                                        }
                                         Err(err) => notice.set(Some(Notice::error(err))),
                                     }
                                 },

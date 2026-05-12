@@ -39,6 +39,187 @@ impl SandboxBlueprint {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchPrimaryTarget {
+    service_name: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchStage {
+    ConfigSaved,
+    SystemRouting,
+    ServicesStarted,
+    PrimaryUrlOpened,
+}
+
+impl LaunchStage {
+    fn failure_title(self) -> &'static str {
+        match self {
+            Self::ConfigSaved => "Config save failed",
+            Self::SystemRouting => "System routing failed",
+            Self::ServicesStarted => "Service start failed",
+            Self::PrimaryUrlOpened => "Primary URL open failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchSuccess {
+    started_count: usize,
+    primary_url: Option<String>,
+    browser_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaunchFailure {
+    stage: LaunchStage,
+    error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuidedLaunchStatus {
+    Idle,
+    Running,
+    Succeeded(LaunchSuccess),
+    Failed(LaunchFailure),
+    Dismissed,
+}
+
+fn launch_primary_target(
+    config: &LoopboxConfig,
+    project_name: &str,
+) -> Option<LaunchPrimaryTarget> {
+    let project = config.projects.get(project_name)?;
+    if let Some(default_name) = project.default_open_service.as_ref() {
+        if let Some(target) = launch_target_for_service(config, project_name, default_name) {
+            return Some(target);
+        }
+    }
+
+    project
+        .services
+        .iter()
+        .find_map(|service| launch_target_for_service(config, project_name, &service.name))
+}
+
+fn launch_target_for_service(
+    config: &LoopboxConfig,
+    project_name: &str,
+    service_name: &str,
+) -> Option<LaunchPrimaryTarget> {
+    let project = config.projects.get(project_name)?;
+    let service = project
+        .services
+        .iter()
+        .find(|service| service.name == service_name)?;
+    let has_http_port = loopbox::service_ports(service)
+        .iter()
+        .any(|port| port.protocol == ProxyEndpointProtocol::Http1);
+    if !has_http_port {
+        return None;
+    }
+
+    let url = loopbox::open_url_for(
+        config,
+        project_name,
+        OpenTarget::Service(service.name.clone()),
+    )
+    .ok()?;
+    Some(LaunchPrimaryTarget {
+        service_name: service.name.clone(),
+        url,
+    })
+}
+
+fn launch_success_summary(success: &LaunchSuccess) -> String {
+    let mut message = format!("Started {} service(s).", success.started_count);
+    if let Some(url) = success.primary_url.as_ref() {
+        message.push_str(&format!(" Opened {url}."));
+    } else {
+        message.push_str(" No HTTP service URL was available to open.");
+    }
+    if let Some(warning) = success.browser_warning.as_ref() {
+        message.push_str(&format!(" {warning}"));
+    }
+    message
+}
+
+fn launch_failure_summary(failure: &LaunchFailure) -> String {
+    format!("{}: {}", failure.stage.failure_title(), failure.error)
+}
+
+fn launch_stage_order(stage: LaunchStage) -> u8 {
+    match stage {
+        LaunchStage::ConfigSaved => 0,
+        LaunchStage::SystemRouting => 1,
+        LaunchStage::ServicesStarted => 2,
+        LaunchStage::PrimaryUrlOpened => 3,
+    }
+}
+
+fn launch_check_class(status: &GuidedLaunchStatus, stage: LaunchStage) -> &'static str {
+    match (status, stage) {
+        (GuidedLaunchStatus::Failed(failure), current) if failure.stage == current => {
+            "launch-check launch-check-bad"
+        }
+        (GuidedLaunchStatus::Failed(failure), current)
+            if launch_stage_order(failure.stage) > launch_stage_order(current) =>
+        {
+            "launch-check launch-check-ok"
+        }
+        (GuidedLaunchStatus::Succeeded(success), LaunchStage::PrimaryUrlOpened)
+            if success.browser_warning.is_some() || success.primary_url.is_none() =>
+        {
+            "launch-check launch-check-warn"
+        }
+        (GuidedLaunchStatus::Succeeded(_), _) => "launch-check launch-check-ok",
+        (GuidedLaunchStatus::Running, _) => "launch-check launch-check-running",
+        (_, LaunchStage::ConfigSaved) => "launch-check launch-check-ok",
+        _ => "launch-check",
+    }
+}
+
+fn launch_check_icon(status: &GuidedLaunchStatus, stage: LaunchStage) -> &'static str {
+    match launch_check_class(status, stage) {
+        "launch-check launch-check-ok" => "\u{2713}",
+        "launch-check launch-check-bad" => "\u{26A0}",
+        "launch-check launch-check-warn" => "!",
+        "launch-check launch-check-running" => "\u{2022}",
+        _ => "\u{00B7}",
+    }
+}
+
+fn run_guided_launch(
+    config: &LoopboxConfig,
+    project_name: &str,
+) -> Result<LaunchSuccess, LaunchFailure> {
+    loopbox::apply_system_setup(config).map_err(|error| LaunchFailure {
+        stage: LaunchStage::SystemRouting,
+        error,
+    })?;
+
+    let started =
+        loopbox::start_project_all(config, project_name).map_err(|error| LaunchFailure {
+            stage: LaunchStage::ServicesStarted,
+            error,
+        })?;
+
+    let primary_target = launch_primary_target(config, project_name);
+    let mut browser_warning = None;
+    if let Some(target) = primary_target.as_ref() {
+        if let Err(err) = webbrowser::open(&target.url) {
+            browser_warning = Some(format!("Failed to open {}: {err}", target.url));
+        }
+    }
+
+    Ok(LaunchSuccess {
+        started_count: started.len(),
+        primary_url: primary_target.map(|target| target.url),
+        browser_warning,
+    })
+}
+
 #[component]
 pub(super) fn NewSandboxWizard(
     add_form_snapshot: AddProjectInput,
@@ -50,6 +231,7 @@ pub(super) fn NewSandboxWizard(
     pending_auto_apply: Signal<Option<String>>,
     mut current_page: Signal<Page>,
 ) -> Element {
+    let _ = pending_auto_apply;
     let initial_browser_path = if add_form_snapshot.dir.trim().is_empty() {
         default_browser_path()
     } else {
@@ -63,6 +245,8 @@ pub(super) fn NewSandboxWizard(
     let mut discovery_cache_key = use_signal(String::new);
     let mut detected_blueprint_signal = use_signal(|| None::<loopbox::ProjectBlueprintSuggestion>);
     let mut detected_blueprint_cache_key = use_signal(String::new);
+    let mut launch_project_name = use_signal(|| None::<String>);
+    let mut launch_status = use_signal(|| GuidedLaunchStatus::Idle);
 
     let directory_entries = use_memo(move || {
         let _refresh_tick = browser_refresh();
@@ -124,6 +308,19 @@ pub(super) fn NewSandboxWizard(
     let has_services = !preview_services.is_empty();
     let commands_ready = preview_services.iter().all(wizard_service_entry_is_ready);
     let can_continue_services = has_services && commands_ready;
+    let launch_project = launch_project_name();
+    let launch_project_label = launch_project.clone().unwrap_or_default();
+    let launch_status_snapshot = launch_status();
+    let launch_project_config = launch_project
+        .as_ref()
+        .and_then(|name| config().projects.get(name).cloned());
+    let launch_service_count = launch_project_config
+        .as_ref()
+        .map(|project| project.services.len())
+        .unwrap_or_default();
+    let launch_primary_target_snapshot = launch_project
+        .as_ref()
+        .and_then(|name| launch_primary_target(&config(), name));
 
     let discovery_suggestions = discovery_suggestions();
     let detected_blueprint = detected_blueprint_signal();
@@ -146,6 +343,8 @@ pub(super) fn NewSandboxWizard(
                         onclick: move |_| {
                             add_form.set(AddProjectInput::default());
                             selected_blueprint_signal.set(SandboxBlueprint::AutoDetect);
+                            launch_project_name.set(None);
+                            launch_status.set(GuidedLaunchStatus::Dismissed);
                             step.set(1);
                             current_page.set(Page::Sandboxes);
                         },
@@ -162,14 +361,20 @@ pub(super) fn NewSandboxWizard(
                     (2_u8, "Project"),
                     (3_u8, "Services"),
                     (4_u8, "Review"),
+                    (5_u8, "Launch"),
                 ] {
                     {{
-                        let unlocked = match index {
-                            1 => true,
-                            2 => true,
-                            3 => can_continue_project,
-                            4 => can_continue_project && can_continue_services,
-                            _ => false,
+                        let unlocked = if launch_project.is_some() {
+                            index == 5
+                        } else {
+                            match index {
+                                1 => true,
+                                2 => true,
+                                3 => can_continue_project,
+                                4 => can_continue_project && can_continue_services,
+                                5 => false,
+                                _ => false,
+                            }
                         };
                         let class_name = if current_step == index {
                             "wizard-step wizard-step-active"
@@ -814,7 +1019,7 @@ pub(super) fn NewSandboxWizard(
                         }
                     }
                 }
-            } else {
+            } else if current_step == 4 {
                 div { class: "wizard-pane",
                     p { class: "wizard-subtitle",
                         "Final check: verify hosts, ports, and commands, then create the sandbox."
@@ -955,25 +1160,225 @@ pub(super) fn NewSandboxWizard(
                                 };
 
                                 match add_result {
-                                    Ok(name) => {
-                                        selected_project.set(Some(name.clone()));
-                                        add_form.set(AddProjectInput::default());
-                                        selected_blueprint_signal.set(SandboxBlueprint::AutoDetect);
-                                        step.set(1);
-                                        browser_path.set(default_browser_path());
-                                        current_page.set(Page::Sandboxes);
-                                        persist_config_and_apply(
-                                            config,
-                                            notice,
-                                            pending_auto_apply,
-                                            format!("Added '{name}'."),
-                                            Some(previous),
-                                        );
+                                    Ok(name) => match loopbox::save_config(&config()) {
+                                        Ok(path) => {
+                                            selected_project.set(Some(name.clone()));
+                                            launch_project_name.set(Some(name.clone()));
+                                            launch_status.set(GuidedLaunchStatus::Idle);
+                                            step.set(5);
+                                            notice.set(Some(Notice::success(format!(
+                                                "Added '{name}'. Saved {}.",
+                                                path.display()
+                                            ))));
+                                        }
+                                        Err(err) => {
+                                            config.set(previous);
+                                            launch_project_name.set(None);
+                                            launch_status.set(GuidedLaunchStatus::Failed(
+                                                LaunchFailure {
+                                                    stage: LaunchStage::ConfigSaved,
+                                                    error: err.clone(),
+                                                },
+                                            ));
+                                            notice.set(Some(Notice::error(err)));
+                                        }
                                     }
                                     Err(err) => notice.set(Some(Notice::error(err))),
                                 }
                             },
                             "Add Sandbox"
+                        }
+                    }
+                }
+            } else {
+                div { class: "wizard-pane launch-pane",
+                    div { class: "launch-header",
+                        div {
+                            span { class: "wizard-review-label", "Guided Launch" }
+                            h2 { class: "launch-title", "{launch_project_label}" }
+                        }
+                        span { class: "panel-badge", "{launch_service_count} service(s)" }
+                    }
+
+                    p { class: "wizard-subtitle",
+                        "Launch applies routing, starts services in dependency order, and opens the primary HTTP service."
+                    }
+
+                    div { class: "launch-checklist",
+                        div { class: "{launch_check_class(&launch_status_snapshot, LaunchStage::ConfigSaved)}",
+                            span { class: "launch-check-icon", "{launch_check_icon(&launch_status_snapshot, LaunchStage::ConfigSaved)}" }
+                            div { class: "launch-check-body",
+                                strong { "Config saved" }
+                                span { "Sandbox is written to Loopbox config." }
+                            }
+                        }
+                        div { class: "{launch_check_class(&launch_status_snapshot, LaunchStage::SystemRouting)}",
+                            span { class: "launch-check-icon", "{launch_check_icon(&launch_status_snapshot, LaunchStage::SystemRouting)}" }
+                            div { class: "launch-check-body",
+                                strong { "System routing" }
+                                span { "Loopback aliases, hosts, and proxy setup are applied." }
+                            }
+                        }
+                        div { class: "{launch_check_class(&launch_status_snapshot, LaunchStage::ServicesStarted)}",
+                            span { class: "launch-check-icon", "{launch_check_icon(&launch_status_snapshot, LaunchStage::ServicesStarted)}" }
+                            div { class: "launch-check-body",
+                                strong { "Services started" }
+                                span { "Loopbox starts services in dependency order." }
+                            }
+                        }
+                        div { class: "{launch_check_class(&launch_status_snapshot, LaunchStage::PrimaryUrlOpened)}",
+                            span { class: "launch-check-icon", "{launch_check_icon(&launch_status_snapshot, LaunchStage::PrimaryUrlOpened)}" }
+                            div { class: "launch-check-body",
+                                strong { "Primary URL opened" }
+                                if let Some(target) = launch_primary_target_snapshot.as_ref() {
+                                    span { "{target.service_name} -> {target.url}" }
+                                } else {
+                                    span { "No HTTP service URL is configured." }
+                                }
+                            }
+                        }
+                    }
+
+                    match launch_status_snapshot.clone() {
+                        GuidedLaunchStatus::Idle => rsx! {
+                            div { class: "launch-result launch-result-idle",
+                                "Ready to launch this sandbox."
+                            }
+                        },
+                        GuidedLaunchStatus::Running => rsx! {
+                            div { class: "launch-result launch-result-running",
+                                "Launching..."
+                            }
+                        },
+                        GuidedLaunchStatus::Succeeded(success) => rsx! {
+                            div { class: if success.browser_warning.is_some() { "launch-result launch-result-warn" } else { "launch-result launch-result-ok" },
+                                "{launch_success_summary(&success)}"
+                            }
+                        },
+                        GuidedLaunchStatus::Failed(failure) => rsx! {
+                            div { class: "launch-result launch-result-bad",
+                                "{launch_failure_summary(&failure)}"
+                            }
+                        },
+                        GuidedLaunchStatus::Dismissed => rsx! {
+                            div { class: "launch-result launch-result-idle",
+                                "Launch skipped."
+                            }
+                        },
+                    }
+
+                    if let Some(target) = launch_primary_target_snapshot.as_ref() {
+                        div { class: "launch-url-card",
+                            div {
+                                span { class: "wizard-review-label", "Primary URL" }
+                                p { class: "wizard-review-mono", "{target.url}" }
+                            }
+                            div { class: "launch-url-actions",
+                                button {
+                                    class: "btn btn-sm btn-outline",
+                                    onclick: {
+                                        let url = target.url.clone();
+                                        move |_| {
+                                            match webbrowser::open(&url) {
+                                                Ok(()) => notice.set(Some(Notice::info(format!("Opened {url}")))),
+                                                Err(err) => notice.set(Some(Notice::error(format!("Failed: {err}")))),
+                                            }
+                                        }
+                                    },
+                                    "Open URL"
+                                }
+                                button {
+                                    class: "btn btn-sm btn-outline",
+                                    onclick: {
+                                        let url = target.url.clone();
+                                        move |_| match copy_to_clipboard(&url) {
+                                            Ok(()) => notice.set(Some(Notice::success("Copied primary URL."))),
+                                            Err(err) => notice.set(Some(Notice::error(err))),
+                                        }
+                                    },
+                                    "Copy URL"
+                                }
+                            }
+                        }
+                    }
+
+                    div { class: "wizard-footer wizard-footer-split",
+                        button {
+                            class: "btn btn-outline",
+                            onclick: move |_| {
+                                if let Some(project_name) = launch_project_name() {
+                                    selected_project.set(Some(project_name));
+                                }
+                                add_form.set(AddProjectInput::default());
+                                selected_blueprint_signal.set(SandboxBlueprint::AutoDetect);
+                                launch_project_name.set(None);
+                                launch_status.set(GuidedLaunchStatus::Dismissed);
+                                step.set(1);
+                                browser_path.set(default_browser_path());
+                                current_page.set(Page::Sandboxes);
+                            },
+                            "Skip"
+                        }
+                        div { class: "launch-footer-actions",
+                            button {
+                                class: "btn btn-outline",
+                                onclick: move |_| {
+                                    if let Some(project_name) = launch_project_name() {
+                                        selected_project.set(Some(project_name));
+                                    }
+                                    add_form.set(AddProjectInput::default());
+                                    selected_blueprint_signal.set(SandboxBlueprint::AutoDetect);
+                                    launch_project_name.set(None);
+                                    launch_status.set(GuidedLaunchStatus::Dismissed);
+                                    step.set(1);
+                                    browser_path.set(default_browser_path());
+                                    current_page.set(Page::Sandboxes);
+                                },
+                                "Open Sandbox"
+                            }
+                            button {
+                                class: "btn btn-primary",
+                                disabled: matches!(&launch_status_snapshot, GuidedLaunchStatus::Running) || launch_project.is_none(),
+                                onclick: move |_| {
+                                    let Some(project_name) = launch_project_name() else {
+                                        notice.set(Some(Notice::error("No sandbox is ready to launch.")));
+                                        return;
+                                    };
+                                    let cfg = config();
+                                    launch_status.set(GuidedLaunchStatus::Running);
+                                    let mut launch_status_signal = launch_status;
+                                    let mut notice_signal = notice;
+                                    spawn(async move {
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            run_guided_launch(&cfg, &project_name)
+                                        })
+                                        .await
+                                        .map_err(|err| LaunchFailure {
+                                            stage: LaunchStage::SystemRouting,
+                                            error: format!("Launch task failed: {err}"),
+                                        })
+                                        .and_then(|result| result);
+
+                                        match result {
+                                            Ok(success) => {
+                                                let summary = launch_success_summary(&success);
+                                                launch_status_signal.set(GuidedLaunchStatus::Succeeded(success));
+                                                notice_signal.set(Some(Notice::success(summary)));
+                                            }
+                                            Err(failure) => {
+                                                let summary = launch_failure_summary(&failure);
+                                                launch_status_signal.set(GuidedLaunchStatus::Failed(failure));
+                                                notice_signal.set(Some(Notice::error(summary)));
+                                            }
+                                        }
+                                    });
+                                },
+                                if matches!(&launch_status_snapshot, GuidedLaunchStatus::Failed(_)) {
+                                    "Retry"
+                                } else {
+                                    "Launch"
+                                }
+                            }
                         }
                     }
                 }
@@ -1653,5 +2058,115 @@ mod tests {
         assert!(duplicate_check.detail.contains("127.0.0.42:8080"));
         assert!(duplicate_check.detail.contains("api"));
         assert!(duplicate_check.detail.contains("web"));
+    }
+
+    fn launch_service(
+        name: &str,
+        port: Option<u16>,
+        protocol: ProxyEndpointProtocol,
+    ) -> ServiceConfig {
+        ServiceConfig {
+            name: name.to_string(),
+            runtime: crate::loopbox::ServiceRuntimeKind::Process,
+            container: None,
+            ports: port
+                .map(|port| {
+                    vec![crate::loopbox::ServicePortConfig {
+                        port,
+                        protocol: protocol.clone(),
+                        health_path: None,
+                    }]
+                })
+                .unwrap_or_default(),
+            port,
+            protocol,
+            command: "npm run dev".to_string(),
+            workdir: "/tmp/demo".to_string(),
+            env_files: Vec::new(),
+            depends_on: Vec::new(),
+            autostart: false,
+            health_path: None,
+        }
+    }
+
+    fn launch_config(
+        default_open_service: Option<&str>,
+        services: Vec<ServiceConfig>,
+    ) -> LoopboxConfig {
+        LoopboxConfig {
+            global: crate::loopbox::GlobalConfig::default(),
+            projects: BTreeMap::from([(
+                "demo".to_string(),
+                ProjectConfig {
+                    dir: "/tmp/demo".to_string(),
+                    ip: "127.0.0.30".to_string(),
+                    services,
+                    default_open_service: default_open_service.map(str::to_string),
+                    proxy_traffic_capture_enabled: None,
+                    proxy_traffic_capture_mode: None,
+                    grpc_proto_paths: Vec::new(),
+                    proxy_endpoints: Vec::new(),
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn launch_primary_target_prefers_routable_default_open_service() {
+        let config = launch_config(
+            Some("web"),
+            vec![
+                launch_service("api", Some(8080), ProxyEndpointProtocol::Http1),
+                launch_service("web", Some(5173), ProxyEndpointProtocol::Http1),
+            ],
+        );
+
+        let target = launch_primary_target(&config, "demo").expect("launch target");
+        let expected_url = loopbox::open_url_for(
+            &config,
+            "demo",
+            OpenTarget::Service("web".to_string()),
+        )
+        .expect("canonical open url");
+
+        assert_eq!(target.service_name, "web");
+        assert_eq!(target.url, expected_url);
+    }
+
+    #[test]
+    fn launch_primary_target_falls_back_when_no_http_url_exists() {
+        let config = launch_config(
+            Some("db"),
+            vec![
+                launch_service("worker", None, ProxyEndpointProtocol::Http1),
+                launch_service("db", Some(5432), ProxyEndpointProtocol::TcpPassthrough),
+            ],
+        );
+
+        assert_eq!(launch_primary_target(&config, "demo"), None);
+    }
+
+    #[test]
+    fn launch_success_message_includes_started_count_and_browser_warning() {
+        let summary = launch_success_summary(&LaunchSuccess {
+            started_count: 2,
+            primary_url: Some("http://127.0.0.30:5173".to_string()),
+            browser_warning: Some("browser unavailable".to_string()),
+        });
+
+        assert!(summary.contains("Started 2 service(s)."));
+        assert!(summary.contains("http://127.0.0.30:5173"));
+        assert!(summary.contains("browser unavailable"));
+    }
+
+    #[test]
+    fn launch_failure_message_names_failed_stage() {
+        let message = launch_failure_summary(&LaunchFailure {
+            stage: LaunchStage::ServicesStarted,
+            error: "service crashed".to_string(),
+        });
+
+        assert!(message.contains("Service start failed"));
+        assert!(message.contains("service crashed"));
     }
 }

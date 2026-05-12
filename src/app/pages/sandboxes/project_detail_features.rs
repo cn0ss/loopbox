@@ -157,11 +157,11 @@ pub(super) fn ProjectDetailTrafficTab(
 ) -> Element {
     let initial_traffic_filter = project.services.first().map(|service| service.name.clone());
     let mut traffic_filter = use_signal(move || initial_traffic_filter.clone());
-    let mut selected_traffic_event_id = use_signal(|| None::<u64>);
-    let mut request_body_modes = use_signal(BTreeMap::<u64, TrafficBodyViewMode>::new);
-    let mut response_body_modes = use_signal(BTreeMap::<u64, TrafficBodyViewMode>::new);
-    let mut expanded_request_bodies = use_signal(HashSet::<u64>::new);
-    let mut expanded_response_bodies = use_signal(HashSet::<u64>::new);
+    let mut selected_traffic_event_key = use_signal(|| None::<String>);
+    let mut request_body_modes = use_signal(BTreeMap::<String, TrafficBodyViewMode>::new);
+    let mut response_body_modes = use_signal(BTreeMap::<String, TrafficBodyViewMode>::new);
+    let mut expanded_request_bodies = use_signal(HashSet::<String>::new);
+    let mut expanded_response_bodies = use_signal(HashSet::<String>::new);
 
     let pn_traffic = project_name.clone();
     let traffic_events = use_memo(move || {
@@ -186,25 +186,46 @@ pub(super) fn ProjectDetailTrafficTab(
     let capture_enabled = loopbox::project_proxy_traffic_enabled(&config(), &project_name);
     let capture_mode = loopbox::project_proxy_traffic_capture_mode(&config(), &project_name);
     let traffic_disk_stats = loopbox::proxy_traffic_disk_stats();
-    let selected_traffic_event = selected_traffic_event_id()
-        .and_then(|selected_id| {
+    let selected_traffic_event_entry = selected_traffic_event_key()
+        .and_then(|selected_key| {
             traffic_snapshot
                 .iter()
-                .find(|event| event.id == selected_id)
-                .cloned()
+                .enumerate()
+                .find_map(|(index, event)| {
+                    let event_key = traffic_event_ui_key(event, index);
+                    if event_key == selected_key {
+                        Some((event_key, event.clone()))
+                    } else {
+                        None
+                    }
+                })
         })
-        .or_else(|| traffic_snapshot.first().cloned());
-    let selected_traffic_event_id_snapshot = selected_traffic_event.as_ref().map(|event| event.id);
-    let request_body_mode = selected_traffic_event_id_snapshot
-        .and_then(|event_id| request_body_modes().get(&event_id).copied())
+        .or_else(|| {
+            traffic_snapshot
+                .first()
+                .map(|event| (traffic_event_ui_key(event, 0), event.clone()))
+        });
+    let selected_traffic_event_key_snapshot = selected_traffic_event_entry
+        .as_ref()
+        .map(|(event_key, _)| event_key.clone());
+    let selected_traffic_event = selected_traffic_event_entry.map(|(_, event)| event);
+    let selected_traffic_event_state_key = selected_traffic_event_key_snapshot
+        .clone()
+        .unwrap_or_default();
+    let request_body_mode = selected_traffic_event_key_snapshot
+        .as_ref()
+        .and_then(|event_key| request_body_modes().get(event_key).copied())
         .unwrap_or(TrafficBodyViewMode::Pretty);
-    let response_body_mode = selected_traffic_event_id_snapshot
-        .and_then(|event_id| response_body_modes().get(&event_id).copied())
+    let response_body_mode = selected_traffic_event_key_snapshot
+        .as_ref()
+        .and_then(|event_key| response_body_modes().get(event_key).copied())
         .unwrap_or(TrafficBodyViewMode::Pretty);
-    let request_body_expanded = selected_traffic_event_id_snapshot
-        .is_some_and(|event_id| expanded_request_bodies().contains(&event_id));
-    let response_body_expanded = selected_traffic_event_id_snapshot
-        .is_some_and(|event_id| expanded_response_bodies().contains(&event_id));
+    let request_body_expanded = selected_traffic_event_key_snapshot
+        .as_ref()
+        .is_some_and(|event_key| expanded_request_bodies().contains(event_key));
+    let response_body_expanded = selected_traffic_event_key_snapshot
+        .as_ref()
+        .is_some_and(|event_key| expanded_response_bodies().contains(event_key));
 
     let mut force_tick = move || {
         runtime_tick.with_mut(|tick| *tick = tick.wrapping_add(1));
@@ -346,7 +367,7 @@ pub(super) fn ProjectDetailTrafficTab(
                             move |_| {
                                 match loopbox::clear_proxy_traffic_events_for_project(&pn) {
                                     Ok(removed) => {
-                                        selected_traffic_event_id.set(None);
+                                        selected_traffic_event_key.set(None);
                                         notice.set(Some(Notice::info(format!(
                                             "Cleared {removed} traffic event(s)."
                                         ))));
@@ -374,22 +395,29 @@ pub(super) fn ProjectDetailTrafficTab(
                                 "{traffic_snapshot.len()} requests"
                             }
                         }
-                        for event in &traffic_snapshot {
-                            div {
-                                key: "traffic-event-{event.id}",
-                                class: if selected_traffic_event_id() == Some(event.id) {
-                                    "traffic-row traffic-row-selected"
-                                } else {
-                                    "traffic-row"
-                                },
-                                onclick: {
-                                    let id = event.id;
-                                    move |_| selected_traffic_event_id.set(Some(id))
-                                },
-                                span { class: format!("traffic-method {}", traffic_method_class(&event.method)), "{event.method}" }
-                                span { class: "traffic-path", "{event.path}" }
-                                span { class: format!("traffic-status-code {}", traffic_status_class(event)), "{traffic_status_label(event)}" }
-                                span { class: "traffic-dur", "{event.duration_ms}ms" }
+                        for (index, event) in traffic_snapshot.iter().enumerate() {
+                            {{
+                                let event_key = traffic_event_ui_key(event, index);
+                                let selected = selected_traffic_event_key() == Some(event_key.clone());
+                                rsx! {
+                                    div {
+                                        key: "{event_key}",
+                                        class: if selected {
+                                            "traffic-row traffic-row-selected"
+                                        } else {
+                                            "traffic-row"
+                                        },
+                                        onclick: {
+                                            let event_key = event_key.clone();
+                                            move |_| selected_traffic_event_key.set(Some(event_key.clone()))
+                                        },
+                                        span { class: format!("traffic-method {}", traffic_method_class(&event.method)), "{event.method}" }
+                                        span { class: "traffic-path", "{event.path}" }
+                                        span { class: format!("traffic-status-code {}", traffic_status_class(event)), "{traffic_status_label(event)}" }
+                                        span { class: "traffic-dur", "{event.duration_ms}ms" }
+                                    }
+                                }
+                            }
                             }
                         }
                     }
@@ -557,10 +585,10 @@ pub(super) fn ProjectDetailTrafficTab(
                                                             "traffic-toggle-btn"
                                                         },
                                                         onclick: {
-                                                            let event_id = event.id;
+                                                            let event_key = selected_traffic_event_state_key.clone();
                                                             move |_| {
                                                                 request_body_modes.with_mut(|modes| {
-                                                                    modes.insert(event_id, TrafficBodyViewMode::Pretty);
+                                                                    modes.insert(event_key.clone(), TrafficBodyViewMode::Pretty);
                                                                 });
                                                             }
                                                         },
@@ -573,10 +601,10 @@ pub(super) fn ProjectDetailTrafficTab(
                                                             "traffic-toggle-btn"
                                                         },
                                                         onclick: {
-                                                            let event_id = event.id;
+                                                            let event_key = selected_traffic_event_state_key.clone();
                                                             move |_| {
                                                                 request_body_modes.with_mut(|modes| {
-                                                                    modes.insert(event_id, TrafficBodyViewMode::Raw);
+                                                                    modes.insert(event_key.clone(), TrafficBodyViewMode::Raw);
                                                                 });
                                                             }
                                                         },
@@ -610,13 +638,13 @@ pub(super) fn ProjectDetailTrafficTab(
                                             button {
                                                 class: "traffic-expand-btn",
                                                 onclick: {
-                                                    let event_id = event.id;
+                                                    let event_key = selected_traffic_event_state_key.clone();
                                                     move |_| {
                                                         expanded_request_bodies.with_mut(|expanded| {
-                                                            if expanded.contains(&event_id) {
-                                                                expanded.remove(&event_id);
+                                                            if expanded.contains(&event_key) {
+                                                                expanded.remove(&event_key);
                                                             } else {
-                                                                expanded.insert(event_id);
+                                                                expanded.insert(event_key.clone());
                                                             }
                                                         });
                                                     }
@@ -663,10 +691,10 @@ pub(super) fn ProjectDetailTrafficTab(
                                                             "traffic-toggle-btn"
                                                         },
                                                         onclick: {
-                                                            let event_id = event.id;
+                                                            let event_key = selected_traffic_event_state_key.clone();
                                                             move |_| {
                                                                 response_body_modes.with_mut(|modes| {
-                                                                    modes.insert(event_id, TrafficBodyViewMode::Pretty);
+                                                                    modes.insert(event_key.clone(), TrafficBodyViewMode::Pretty);
                                                                 });
                                                             }
                                                         },
@@ -679,10 +707,10 @@ pub(super) fn ProjectDetailTrafficTab(
                                                             "traffic-toggle-btn"
                                                         },
                                                         onclick: {
-                                                            let event_id = event.id;
+                                                            let event_key = selected_traffic_event_state_key.clone();
                                                             move |_| {
                                                                 response_body_modes.with_mut(|modes| {
-                                                                    modes.insert(event_id, TrafficBodyViewMode::Raw);
+                                                                    modes.insert(event_key.clone(), TrafficBodyViewMode::Raw);
                                                                 });
                                                             }
                                                         },
@@ -716,13 +744,13 @@ pub(super) fn ProjectDetailTrafficTab(
                                             button {
                                                 class: "traffic-expand-btn",
                                                 onclick: {
-                                                    let event_id = event.id;
+                                                    let event_key = selected_traffic_event_state_key.clone();
                                                     move |_| {
                                                         expanded_response_bodies.with_mut(|expanded| {
-                                                            if expanded.contains(&event_id) {
-                                                                expanded.remove(&event_id);
+                                                            if expanded.contains(&event_key) {
+                                                                expanded.remove(&event_key);
                                                             } else {
-                                                                expanded.insert(event_id);
+                                                                expanded.insert(event_key.clone());
                                                             }
                                                         });
                                                     }
@@ -766,6 +794,20 @@ fn service_entry_runtime(entry: &ServiceEntry) -> ServiceRuntimeKind {
 
 fn service_entry_requires_command(entry: &ServiceEntry) -> bool {
     !matches!(service_entry_runtime(entry), ServiceRuntimeKind::Container)
+}
+
+fn traffic_event_ui_key(event: &ProxyTrafficEvent, index: usize) -> String {
+    format!(
+        "traffic-event-{}|{}|{}|{}|{}|{}|{}|{}",
+        event.id,
+        event.started_at_utc,
+        event.project_name,
+        event.service_name,
+        event.method,
+        event.path,
+        event.status_code.unwrap_or(0),
+        index
+    )
 }
 
 fn traffic_status_label(event: &ProxyTrafficEvent) -> String {
@@ -1181,4 +1223,60 @@ fn sanitize_filename_fragment(raw: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_traffic_event(id: u64, started_at_utc: &str, path: &str) -> ProxyTrafficEvent {
+        ProxyTrafficEvent {
+            id,
+            started_at_utc: started_at_utc.to_string(),
+            project_name: "frame-it".to_string(),
+            service_name: "backend".to_string(),
+            protocol: "http1".to_string(),
+            host: "backend.frame-it.localhost".to_string(),
+            method: "GET".to_string(),
+            path: path.to_string(),
+            status_code: Some(200),
+            stream_id: None,
+            grpc_service: None,
+            grpc_method: None,
+            grpc_status: None,
+            grpc_message: None,
+            duration_ms: 1,
+            request_bytes: 98,
+            response_bytes: 173,
+            request_header_bytes: 98,
+            request_body_bytes: 0,
+            response_header_bytes: 108,
+            response_body_bytes: 65,
+            request_headers: Vec::new(),
+            response_headers: Vec::new(),
+            request_body_preview: None,
+            response_body_preview: None,
+            request_body_truncated: false,
+            response_body_truncated: false,
+            request_body_binary: false,
+            response_body_binary: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn traffic_event_ui_key_distinguishes_duplicate_numeric_ids() {
+        let first = sample_traffic_event(1, "2026-05-10 12:16:07 UTC", "/readiness");
+        let second = sample_traffic_event(1, "2026-05-10 13:02:12 UTC", "/readiness");
+        let identical_legacy_row = first.clone();
+
+        assert_ne!(
+            traffic_event_ui_key(&first, 0),
+            traffic_event_ui_key(&second, 1)
+        );
+        assert_ne!(
+            traffic_event_ui_key(&first, 0),
+            traffic_event_ui_key(&identical_legacy_row, 1)
+        );
+    }
 }

@@ -30,6 +30,7 @@ AUTH="Authorization: Bearer ${TOKEN}"
 - `GET /v1/projects/{project}`
 - `PUT /v1/projects/{project}?apply_system_setup={true|false}`
 - `GET /v1/projects/{project}/runtime`
+- `GET /v1/projects/{project}/incidents?service={service?}&window={15m|1h|24h|7d}&limit={n}`
 - `GET /v1/projects/{project}/resources?service={service?}&window={15m|1h|24h|7d}&limit={n}`
 - `GET /v1/projects/{project}/logs?service={service}&limit={n}`
 - `GET /v1/projects/{project}/requests?service={service?}&limit={n}`
@@ -45,7 +46,17 @@ OpenAPI is served directly by Loopbox at:
 
 - `GET /v1/openapi.json`
 - Discovery file includes `openapi_url`
-- The OpenAPI document includes component schemas for project mutation requests, runtime responses, resource metrics, logs, requests, Doctor output, and service input.
+- The OpenAPI document includes component schemas for project mutation requests, runtime responses, incident timelines, resource metrics, logs, requests, Doctor output, and service input.
+
+## Incident timeline
+
+`GET /v1/projects/{project}/incidents` returns an observe-only timeline for diagnostic handoff. Query parameters:
+
+- `service` optionally filters to one service.
+- `window` accepts `15m`, `1h`, `24h`, or `7d` and defaults to `1h`.
+- `limit` caps returned events and is clamped by the server.
+
+Runtime transitions are persisted in JSONL under `~/.config/loopbox/incident-events/` with fixed 7-day cleanup. Traffic failures, slow requests, resource pressure, resource unavailability, and log excerpts are synthesized from existing Loopbox stores at read time.
 
 ## Resource metrics
 
@@ -144,4 +155,9 @@ curl -s -X POST \
 curl -s -H "${AUTH}" \
   "${BASE}/v1/projects/demo/resources?service=web&window=1h&limit=120" \
   | jq '{latest: .latest, sample_count: (.samples | length)}'
+
+# Inspect recent incidents before drilling into logs, requests, or resources
+curl -s -H "${AUTH}" \
+  "${BASE}/v1/projects/demo/incidents?service=web&window=1h&limit=50" \
+  | jq '.events[] | {severity, kind, summary, evidence_count: (.evidence | length)}'
 ```

@@ -20,7 +20,13 @@ const REQUIRED_LOOPBOX_CREATION_TOOLS: &[&str] =
     &["loopbox_validate_project_config", "loopbox_create_project"];
 
 static CODEX_SESSION: OnceLock<Mutex<Option<Arc<CodexAppInner>>>> = OnceLock::new();
-static PREFILLED_PROMPT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static PREFILLED_PROMPT: OnceLock<Mutex<Option<CodexPrefillPrompt>>> = OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexPrefillPrompt {
+    prompt: String,
+    diagnosis_session_id: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexAgentModel {
@@ -86,10 +92,12 @@ pub struct CodexAgentsSnapshot {
     pub stderr_tail: Vec<String>,
     pub event_log: Vec<String>,
     pub prefilled_prompt: Option<String>,
+    pub prefilled_diagnosis_session_id: Option<String>,
 }
 
 impl Default for CodexAgentsSnapshot {
     fn default() -> Self {
+        let prefilled = take_prefilled_prompt();
         Self {
             enabled: true,
             running: false,
@@ -108,7 +116,9 @@ impl Default for CodexAgentsSnapshot {
             errors: Vec::new(),
             stderr_tail: Vec::new(),
             event_log: Vec::new(),
-            prefilled_prompt: take_prefilled_prompt(),
+            prefilled_prompt: prefilled.as_ref().map(|prompt| prompt.prompt.clone()),
+            prefilled_diagnosis_session_id: prefilled
+                .and_then(|prompt| prompt.diagnosis_session_id),
         }
     }
 }
@@ -116,6 +126,7 @@ impl Default for CodexAgentsSnapshot {
 #[derive(Debug, Clone)]
 struct PendingTurn {
     input: String,
+    diagnosis_session_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -135,6 +146,7 @@ struct CodexAppState {
     pending_requests: Vec<CodexAgentPendingRequest>,
     outbound_methods: BTreeMap<u64, String>,
     pending_initial_turn: Option<PendingTurn>,
+    active_diagnosis_session_id: Option<String>,
     errors: Vec<String>,
     stderr_tail: VecDeque<String>,
     event_log: VecDeque<String>,
@@ -159,6 +171,7 @@ impl CodexAppState {
             pending_requests: Vec::new(),
             outbound_methods: BTreeMap::new(),
             pending_initial_turn: None,
+            active_diagnosis_session_id: None,
             errors: Vec::new(),
             stderr_tail: VecDeque::new(),
             event_log: VecDeque::new(),
@@ -166,6 +179,7 @@ impl CodexAppState {
     }
 
     fn snapshot(&self) -> CodexAgentsSnapshot {
+        let prefilled = take_prefilled_prompt();
         CodexAgentsSnapshot {
             enabled: self.enabled,
             running: self.running,
@@ -184,7 +198,9 @@ impl CodexAppState {
             errors: self.errors.clone(),
             stderr_tail: self.stderr_tail.iter().cloned().collect(),
             event_log: self.event_log.iter().cloned().collect(),
-            prefilled_prompt: take_prefilled_prompt(),
+            prefilled_prompt: prefilled.as_ref().map(|prompt| prompt.prompt.clone()),
+            prefilled_diagnosis_session_id: prefilled
+                .and_then(|prompt| prompt.diagnosis_session_id),
         }
     }
 
@@ -237,7 +253,22 @@ pub fn codex_agents_snapshot(config: &LoopboxConfig) -> CodexAgentsSnapshot {
 
 pub fn codex_agents_prefill_prompt(prompt: impl Into<String>) {
     if let Ok(mut slot) = prefilled_prompt_lock().lock() {
-        *slot = Some(prompt.into());
+        *slot = Some(CodexPrefillPrompt {
+            prompt: prompt.into(),
+            diagnosis_session_id: None,
+        });
+    }
+}
+
+pub fn codex_agents_prefill_diagnosis_prompt(
+    diagnosis_session_id: impl Into<String>,
+    prompt: impl Into<String>,
+) {
+    if let Ok(mut slot) = prefilled_prompt_lock().lock() {
+        *slot = Some(CodexPrefillPrompt {
+            prompt: prompt.into(),
+            diagnosis_session_id: Some(diagnosis_session_id.into()),
+        });
     }
 }
 
@@ -342,6 +373,26 @@ pub fn codex_agents_send_message(
     _selected_project: Option<String>,
     input: String,
 ) -> Result<(), String> {
+    codex_agents_send_message_inner(config, input, None)
+}
+
+pub fn codex_agents_send_diagnosis_message(
+    config: &LoopboxConfig,
+    diagnosis_session_id: String,
+    input: String,
+) -> Result<(), String> {
+    let diagnosis_session_id = diagnosis_session_id.trim().to_string();
+    if diagnosis_session_id.is_empty() {
+        return Err("Diagnosis session id cannot be empty.".to_string());
+    }
+    codex_agents_send_message_inner(config, input, Some(diagnosis_session_id))
+}
+
+fn codex_agents_send_message_inner(
+    config: &LoopboxConfig,
+    input: String,
+    diagnosis_session_id: Option<String>,
+) -> Result<(), String> {
     let input = input.trim().to_string();
     if input.is_empty() {
         return Err("Message cannot be empty.".to_string());
@@ -362,11 +413,15 @@ pub fn codex_agents_send_message(
         .clone();
 
     if let Some(thread_id) = active_thread {
+        if let Some(diagnosis_session_id) = diagnosis_session_id.as_ref() {
+            super::link_diagnosis_session_thread(diagnosis_session_id, &thread_id)?;
+        }
         {
             let mut state = session
                 .state
                 .lock()
                 .map_err(|_| "Codex state lock poisoned.".to_string())?;
+            state.active_diagnosis_session_id = diagnosis_session_id.clone();
             state.push_optimistic_user_message(&input);
         }
         send_turn_start(&session, thread_id, turn_input)?;
@@ -380,7 +435,10 @@ pub fn codex_agents_send_message(
                 return Err("Codex is still creating the first thread.".to_string());
             }
             state.push_optimistic_user_message(&input);
-            state.pending_initial_turn = Some(PendingTurn { input: turn_input });
+            state.pending_initial_turn = Some(PendingTurn {
+                input: turn_input,
+                diagnosis_session_id,
+            });
         }
         send_thread_start(&session)?;
     }
@@ -403,6 +461,7 @@ pub fn codex_agents_new_chat(config: &LoopboxConfig) -> Result<(), String> {
         state.active_turn_id = None;
         state.transcript = CodexTranscriptState::default();
         state.pending_initial_turn = None;
+        state.active_diagnosis_session_id = None;
         state.pending_requests.clear();
         state.push_event("started a new unsaved Codex chat");
     }
@@ -730,6 +789,20 @@ fn handle_inbound(inner: &Arc<CodexAppInner>, inbound: CodexInbound) {
     }
 
     if let Some((thread_id, pending_turn)) = actions.pending_turn {
+        if let Some(diagnosis_session_id) = pending_turn.diagnosis_session_id.as_ref() {
+            match super::link_diagnosis_session_thread(diagnosis_session_id, &thread_id) {
+                Ok(_) => {
+                    if let Ok(mut state) = inner.state.lock() {
+                        state.active_diagnosis_session_id = Some(diagnosis_session_id.clone());
+                    }
+                }
+                Err(err) => {
+                    if let Ok(mut state) = inner.state.lock() {
+                        state.push_error(err);
+                    }
+                }
+            }
+        }
         if let Err(err) = send_turn_start(inner, thread_id, pending_turn.input) {
             if let Ok(mut state) = inner.state.lock() {
                 state.push_error(err);
@@ -846,52 +919,77 @@ fn handle_response(
 }
 
 fn handle_notification(inner: &Arc<CodexAppInner>, method: &str, params: &Value) {
-    let Ok(mut state) = inner.state.lock() else {
-        return;
-    };
-    if notification_item_type(params) == Some("userMessage") {
-        state
-            .transcript
-            .items
-            .retain(|item| !item.id.starts_with("optimistic-user-"));
-    }
-    state.transcript.apply_notification(method, params);
+    let completed_diagnosis_report = {
+        let Ok(mut state) = inner.state.lock() else {
+            return;
+        };
+        if notification_item_type(params) == Some("userMessage") {
+            state
+                .transcript
+                .items
+                .retain(|item| !item.id.starts_with("optimistic-user-"));
+        }
+        state.transcript.apply_notification(method, params);
 
-    match method {
-        "turn/started" => {
-            if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
-                state.active_turn_id = Some(turn_id.to_string());
+        let mut completed_diagnosis_report = None;
+        match method {
+            "turn/started" => {
+                if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                    state.active_turn_id = Some(turn_id.to_string());
+                }
+            }
+            "turn/completed" => {
+                if let Some(session_id) = state.active_diagnosis_session_id.take() {
+                    completed_diagnosis_report = Some((
+                        session_id,
+                        state.active_thread_id.clone(),
+                        state.active_turn_id.clone(),
+                        latest_agent_report_message(&state.transcript.items),
+                    ));
+                }
+                state.active_turn_id = None;
+            }
+            "thread/status/changed" => {
+                if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
+                    state
+                        .active_thread_id
+                        .get_or_insert_with(|| thread_id.to_string());
+                }
+            }
+            "account/updated" => {
+                let auth_mode = params.get("authMode").and_then(Value::as_str);
+                let plan = params.get("planType").and_then(Value::as_str);
+                state.auth = CodexAgentAuthState {
+                    label: match (auth_mode, plan) {
+                        (Some(mode), Some(plan)) => format!("{mode} ({plan})"),
+                        (Some(mode), None) => mode.to_string(),
+                        (None, _) => "Signed out".to_string(),
+                    },
+                    requires_auth: true,
+                    signed_in: auth_mode.is_some(),
+                };
+            }
+            _ => {}
+        }
+        if let Some(message) = notification_error_message(method, params) {
+            state.push_error(message);
+        }
+        state.push_event(format!("event: {method}"));
+        completed_diagnosis_report
+    };
+
+    if let Some((session_id, thread_id, turn_id, agent_message)) = completed_diagnosis_report {
+        if let Err(err) = super::complete_diagnosis_session(
+            &session_id,
+            thread_id.as_deref(),
+            turn_id.as_deref(),
+            agent_message.as_deref(),
+        ) {
+            if let Ok(mut state) = inner.state.lock() {
+                state.push_error(err);
             }
         }
-        "turn/completed" => {
-            state.active_turn_id = None;
-        }
-        "thread/status/changed" => {
-            if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-                state
-                    .active_thread_id
-                    .get_or_insert_with(|| thread_id.to_string());
-            }
-        }
-        "account/updated" => {
-            let auth_mode = params.get("authMode").and_then(Value::as_str);
-            let plan = params.get("planType").and_then(Value::as_str);
-            state.auth = CodexAgentAuthState {
-                label: match (auth_mode, plan) {
-                    (Some(mode), Some(plan)) => format!("{mode} ({plan})"),
-                    (Some(mode), None) => mode.to_string(),
-                    (None, _) => "Signed out".to_string(),
-                },
-                requires_auth: true,
-                signed_in: auth_mode.is_some(),
-            };
-        }
-        _ => {}
     }
-    if let Some(message) = notification_error_message(method, params) {
-        state.push_error(message);
-    }
-    state.push_event(format!("event: {method}"));
 }
 
 fn handle_server_request(inner: &Arc<CodexAppInner>, id: &Value, method: &str, params: &Value) {
@@ -1063,6 +1161,14 @@ fn parse_thread_transcript(result: &Value) -> CodexTranscriptState {
     state
 }
 
+fn latest_agent_report_message(items: &[CodexTranscriptItem]) -> Option<String> {
+    items
+        .iter()
+        .rev()
+        .find(|item| item.kind == "agentMessage" && !item.text.trim().is_empty())
+        .map(|item| item.text.clone())
+}
+
 fn timestamp_value(value: &Value) -> Option<i64> {
     value.as_i64().or_else(|| {
         value
@@ -1107,7 +1213,7 @@ fn server_request_body(method: &str, params: &Value) -> String {
 }
 
 fn loopbox_developer_instructions() -> String {
-    r#"You are embedded in Loopbox. Use the Loopbox MCP tools for sandbox, runtime, log, request, and resource questions instead of guessing local ports or reading Loopbox config by hand.
+    r#"You are embedded in Loopbox. Use the Loopbox MCP tools for sandbox, runtime, incident, log, request, and resource questions instead of guessing local ports or reading Loopbox config by hand.
 
 Loopbox vocabulary:
 - In Loopbox, "sandbox" and "project" mean the same thing.
@@ -1116,7 +1222,7 @@ Loopbox vocabulary:
 Operational rules:
 - Prefer Loopbox project hostnames from tool output over guessed localhost ports.
 - Fetch logs with explicit limits and ask before broad or expensive log reads.
-- Use runtime/resource/request tools before suggesting fixes for failed services.
+- Use runtime and incident timeline tools before reading raw logs, resources, or requests for failed services.
 - To create a sandbox/project, first collect the required fields: sandbox name, absolute project directory, services, commands, working directories if needed, ports, protocols, and health paths. Then call `loopbox_validate_project_config`, explain any validation issues, and only call `loopbox_create_project` after user approval.
 - Mutating Loopbox actions must go through MCP elicitation and wait for user approval.
 - Ask before destructive changes, broad restarts, or replacing project configuration.
@@ -1284,11 +1390,11 @@ fn session_lock() -> &'static Mutex<Option<Arc<CodexAppInner>>> {
     CODEX_SESSION.get_or_init(|| Mutex::new(None))
 }
 
-fn prefilled_prompt_lock() -> &'static Mutex<Option<String>> {
+fn prefilled_prompt_lock() -> &'static Mutex<Option<CodexPrefillPrompt>> {
     PREFILLED_PROMPT.get_or_init(|| Mutex::new(None))
 }
 
-fn take_prefilled_prompt() -> Option<String> {
+fn take_prefilled_prompt() -> Option<CodexPrefillPrompt> {
     prefilled_prompt_lock()
         .lock()
         .ok()
@@ -1454,5 +1560,91 @@ mod tests {
         assert!(instructions.contains("project"));
         assert!(instructions.contains("loopbox_validate_project_config"));
         assert!(instructions.contains("loopbox_create_project"));
+    }
+
+    #[test]
+    fn diagnosis_prefill_round_trips_prompt_and_session_id_once() {
+        let config = LoopboxConfig::default();
+
+        codex_agents_prefill_diagnosis_prompt("diag-1", "Investigate this incident");
+        let snapshot = codex_agents_snapshot(&config);
+
+        assert_eq!(
+            snapshot.prefilled_prompt.as_deref(),
+            Some("Investigate this incident")
+        );
+        assert_eq!(
+            snapshot.prefilled_diagnosis_session_id.as_deref(),
+            Some("diag-1")
+        );
+        assert!(codex_agents_snapshot(&config).prefilled_prompt.is_none());
+        assert!(codex_agents_snapshot(&config)
+            .prefilled_diagnosis_session_id
+            .is_none());
+    }
+
+    #[test]
+    fn latest_agent_report_message_uses_last_non_empty_agent_message() {
+        let items = vec![
+            CodexTranscriptItem {
+                id: "user-1".to_string(),
+                kind: "userMessage".to_string(),
+                title: "You".to_string(),
+                text: "Diagnose this".to_string(),
+                status: "completed".to_string(),
+                raw_json: String::new(),
+            },
+            CodexTranscriptItem {
+                id: "agent-empty".to_string(),
+                kind: "agentMessage".to_string(),
+                title: "Agent".to_string(),
+                text: "   ".to_string(),
+                status: "completed".to_string(),
+                raw_json: String::new(),
+            },
+            CodexTranscriptItem {
+                id: "agent-1".to_string(),
+                kind: "agentMessage".to_string(),
+                title: "Agent".to_string(),
+                text: "First diagnosis".to_string(),
+                status: "completed".to_string(),
+                raw_json: String::new(),
+            },
+            CodexTranscriptItem {
+                id: "tool-1".to_string(),
+                kind: "mcpToolCall".to_string(),
+                title: "loopbox/loopbox_logs".to_string(),
+                text: "logs".to_string(),
+                status: "completed".to_string(),
+                raw_json: String::new(),
+            },
+            CodexTranscriptItem {
+                id: "agent-2".to_string(),
+                kind: "agentMessage".to_string(),
+                title: "Agent".to_string(),
+                text: "Final diagnosis".to_string(),
+                status: "completed".to_string(),
+                raw_json: String::new(),
+            },
+        ];
+
+        assert_eq!(
+            latest_agent_report_message(&items).as_deref(),
+            Some("Final diagnosis")
+        );
+    }
+
+    #[test]
+    fn latest_agent_report_message_ignores_empty_agent_output() {
+        let items = vec![CodexTranscriptItem {
+            id: "agent-empty".to_string(),
+            kind: "agentMessage".to_string(),
+            title: "Agent".to_string(),
+            text: "\n\t ".to_string(),
+            status: "completed".to_string(),
+            raw_json: String::new(),
+        }];
+
+        assert!(latest_agent_report_message(&items).is_none());
     }
 }

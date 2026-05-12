@@ -1,7 +1,7 @@
 use crate::app::models::RuntimeFilter;
 use crate::loopbox::{
-    self, ProxyEndpointProtocol, ServiceConfig, ServicePortConfig, ServiceResourceSample,
-    ServiceRuntimeKind, ServiceRuntimeSnapshot, ServiceRuntimeState,
+    self, ProxyEndpointProtocol, ServiceConfig, ServicePortConfig, ServicePortConflict,
+    ServiceResourceSample, ServiceRuntimeKind, ServiceRuntimeSnapshot, ServiceRuntimeState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,7 @@ pub(crate) struct RuntimeServiceRow {
     pub(crate) input_attached: bool,
     pub(crate) terminal_attached: bool,
     pub(crate) resources: Option<ServiceResourceSample>,
+    pub(crate) port_conflicts: Vec<ServicePortConflict>,
     pub(crate) can_start: bool,
     pub(crate) can_stop: bool,
     pub(crate) can_restart: bool,
@@ -44,6 +45,7 @@ pub(crate) struct RuntimeServiceRow {
     pub(crate) can_run: bool,
     pub(crate) can_attach: bool,
     pub(crate) can_send_input: bool,
+    pub(crate) can_kill_port_blocker: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -52,6 +54,7 @@ pub(crate) struct RuntimeServiceAttachments {
     pub(crate) input_attached: bool,
     pub(crate) terminal_attached: bool,
     pub(crate) resources: Option<ServiceResourceSample>,
+    pub(crate) port_conflicts: Vec<ServicePortConflict>,
 }
 
 pub(crate) fn build_runtime_service_row(
@@ -69,6 +72,14 @@ pub(crate) fn build_runtime_service_row(
         attachments.input_attached,
         attachments.terminal_attached,
     );
+    let port_conflicts = if action_flags.is_active {
+        Vec::new()
+    } else {
+        attachments.port_conflicts
+    };
+    let can_kill_port_blocker = port_conflicts
+        .iter()
+        .any(|conflict| conflict.owner.is_some());
 
     RuntimeServiceRow {
         project_name: project_name.to_string(),
@@ -87,6 +98,7 @@ pub(crate) fn build_runtime_service_row(
         input_attached: attachments.input_attached,
         terminal_attached: attachments.terminal_attached,
         resources: attachments.resources,
+        port_conflicts,
         can_start: action_flags.can_start,
         can_stop: action_flags.can_stop,
         can_restart: action_flags.can_restart,
@@ -95,6 +107,7 @@ pub(crate) fn build_runtime_service_row(
         can_run: action_flags.can_run,
         can_attach: action_flags.can_attach,
         can_send_input: action_flags.can_send_input,
+        can_kill_port_blocker,
     }
 }
 
@@ -417,5 +430,86 @@ mod tests {
         assert!(points.starts_with("0.0,32.0 "));
         assert!(points.contains("60.0,16.0"));
         assert!(points.ends_with("120.0,0.0"));
+    }
+
+    fn process_service() -> ServiceConfig {
+        ServiceConfig {
+            name: "web".to_string(),
+            runtime: ServiceRuntimeKind::Process,
+            container: None,
+            ports: vec![ServicePortConfig {
+                port: 5173,
+                protocol: ProxyEndpointProtocol::Http1,
+                health_path: None,
+            }],
+            port: Some(5173),
+            protocol: ProxyEndpointProtocol::Http1,
+            command: "pnpm dev".to_string(),
+            workdir: "/tmp/app".to_string(),
+            env_files: Vec::new(),
+            depends_on: Vec::new(),
+            autostart: false,
+            health_path: None,
+        }
+    }
+
+    fn snapshot(state: ServiceRuntimeState) -> ServiceRuntimeSnapshot {
+        ServiceRuntimeSnapshot {
+            project: "demo".to_string(),
+            service: "web".to_string(),
+            state,
+            pid: None,
+            started_at: None,
+            exit_code: None,
+            last_error: None,
+        }
+    }
+
+    fn port_conflict() -> crate::loopbox::ServicePortConflict {
+        crate::loopbox::ServicePortConflict {
+            bind_ip: "127.0.0.30".to_string(),
+            port: 5173,
+            owner: Some(crate::loopbox::ServicePortOwner {
+                pid: 6257,
+                command: "server".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn stopped_process_rows_expose_port_blocker_actions() {
+        let row = build_runtime_service_row(
+            "demo",
+            "127.0.0.30",
+            &process_service(),
+            snapshot(ServiceRuntimeState::Stopped),
+            RuntimeServiceAttachments {
+                port_conflicts: vec![port_conflict()],
+                ..RuntimeServiceAttachments::default()
+            },
+        );
+
+        assert_eq!(row.port_conflicts.len(), 1);
+        assert!(row.can_kill_port_blocker);
+    }
+
+    #[test]
+    fn active_process_rows_hide_port_blocker_actions() {
+        let mut running = snapshot(ServiceRuntimeState::Running);
+        running.pid = Some(6257);
+
+        let row = build_runtime_service_row(
+            "demo",
+            "127.0.0.30",
+            &process_service(),
+            running,
+            RuntimeServiceAttachments {
+                port_conflicts: vec![port_conflict()],
+                ..RuntimeServiceAttachments::default()
+            },
+        );
+
+        assert!(row.port_conflicts.is_empty());
+        assert!(!row.can_kill_port_blocker);
     }
 }

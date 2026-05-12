@@ -7,10 +7,12 @@ mod agent_api;
 mod codex_app;
 mod codex_protocol;
 mod config;
+mod diagnostics;
 mod discovery;
 mod doctor;
 mod env;
 mod features;
+mod incident;
 mod install;
 mod mcp;
 mod projects;
@@ -32,10 +34,11 @@ pub use agent_api::{
 #[allow(unused_imports)]
 pub use codex_app::{
     codex_agents_accept_request, codex_agents_decline_request, codex_agents_interrupt_turn,
-    codex_agents_new_chat, codex_agents_prefill_prompt, codex_agents_reload_tools,
-    codex_agents_resume_thread, codex_agents_send_message, codex_agents_snapshot,
-    codex_agents_start, codex_agents_stop, CodexAgentAuthState, CodexAgentModel,
-    CodexAgentPendingRequest, CodexAgentThreadSummary, CodexAgentsSnapshot,
+    codex_agents_new_chat, codex_agents_prefill_diagnosis_prompt, codex_agents_prefill_prompt,
+    codex_agents_reload_tools, codex_agents_resume_thread, codex_agents_send_diagnosis_message,
+    codex_agents_send_message, codex_agents_snapshot, codex_agents_start, codex_agents_stop,
+    CodexAgentAuthState, CodexAgentModel, CodexAgentPendingRequest, CodexAgentThreadSummary,
+    CodexAgentsSnapshot,
 };
 pub use codex_protocol::{
     build_notification_line, build_request_line, build_response_line, item_to_transcript,
@@ -44,6 +47,14 @@ pub use codex_protocol::{
 #[allow(unused_imports)]
 pub use config::{
     config_path, load_config, reset_config_to_default, save_config, update_global_settings,
+};
+#[allow(unused_imports)]
+pub use diagnostics::{
+    complete_diagnosis_session, create_diagnosis_session, diagnosis_prompt_for_session,
+    diagnosis_sessions, link_diagnosis_session_thread, read_diagnosis_session,
+    resolve_diagnosis_session, update_diagnosis_session_status, CreateDiagnosisSessionInput,
+    DiagnosisDoctorIssue, DiagnosisEvidenceSnapshot, DiagnosisLogTail, DiagnosisReport,
+    DiagnosisRequestSummary, DiagnosisSession, DiagnosisSource, DiagnosisStatus,
 };
 #[allow(unused_imports)]
 pub use discovery::{
@@ -61,6 +72,11 @@ pub fn enforce_traffic_capture_mode(mode: ProxyCaptureMode) -> ProxyCaptureMode 
 pub use env::{
     discover_env_files, merge_service_env, parse_env_file, read_env_file_content,
     write_env_file_content, EnvMergeResult, ParsedEnvFile,
+};
+#[allow(unused_imports)]
+pub use incident::{
+    incident_timeline_for_project, record_runtime_incident_transition, IncidentEvidence,
+    IncidentKind, IncidentSeverity, IncidentTimelineEvent,
 };
 pub use install::ensure_installed_in_applications;
 #[allow(unused_imports)]
@@ -92,13 +108,14 @@ pub use resource_metrics::{
 };
 #[allow(unused_imports)]
 pub use runtime::{
-    cleanup_stale_runtime_processes, clear_service_logs, open_terminal_attach_for_service,
-    open_terminal_for_service, restart_service, run_runtime_subcommand_from_args,
-    send_service_input, send_terminal_client_message, service_input_attached, service_log_attached,
-    service_logs, service_logs_tail, service_runtime_status, service_terminal_attached,
-    start_project_all, start_service, stop_project_all, stop_service, terminal_session_snapshot,
-    ServiceRuntimeSnapshot, ServiceRuntimeState, TerminalClientMessage, TerminalFrame,
-    TerminalKeyAction, TerminalMods, TerminalMouseKind, TerminalServerMessage,
+    cleanup_stale_runtime_processes, clear_service_logs, kill_service_port_owner,
+    open_terminal_attach_for_service, open_terminal_for_service, restart_service,
+    run_runtime_subcommand_from_args, send_service_input, send_terminal_client_message,
+    service_input_attached, service_log_attached, service_logs, service_logs_tail,
+    service_port_conflicts, service_runtime_status, service_terminal_attached, start_project_all,
+    start_service, stop_project_all, stop_service, terminal_session_snapshot, ServicePortConflict,
+    ServicePortOwner, ServiceRuntimeSnapshot, ServiceRuntimeState, TerminalClientMessage,
+    TerminalFrame, TerminalKeyAction, TerminalMods, TerminalMouseKind, TerminalServerMessage,
 };
 #[allow(unused_imports)]
 pub use system::revert_script;
@@ -555,7 +572,7 @@ pub enum OpenTarget {
     Service(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DoctorLevel {
     Error,
     Warning,

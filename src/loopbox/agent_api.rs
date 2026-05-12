@@ -1,17 +1,18 @@
 use super::{
     add_project, app_version_label, apply_system_setup, clear_reverse_proxy_sidecar_status,
-    config_path, doctor_report, effective_reverse_proxy_status, load_config, project_primary_host,
-    project_proxy_traffic_capture_mode, project_proxy_traffic_enabled,
-    proxy_traffic_events_for_project_with_persisted, record_reverse_proxy_sidecar_status,
-    resource_metrics_latest_for_config, resource_metrics_series_for_project, restart_service,
-    save_config, send_service_input, service_input_attached, service_log_attached,
-    service_logs_tail, service_ports, service_runtime_status, service_terminal_attached,
-    start_project_all, start_service, stop_project_all, stop_service,
-    sync_resource_metrics_sampler, sync_reverse_proxy, update_project, AddProjectInput,
-    AgentApiAuditEvent, AgentApiSettings, ContainerServiceConfig, DoctorFixAction, DoctorIssue,
-    DoctorLevel, LoopboxConfig, OpenTarget, ProjectConfig, ProxyCaptureMode, ProxyEndpointProtocol,
-    ReverseProxyStatus, ServiceConfig, ServiceEntry, ServicePortEntry, ServiceResourceSample,
-    ServiceRuntimeKind, ServiceRuntimeSnapshot, ServiceRuntimeState, UpdateProjectInput,
+    config_path, doctor_report, effective_reverse_proxy_status, incident_timeline_for_project,
+    load_config, project_primary_host, project_proxy_traffic_capture_mode,
+    project_proxy_traffic_enabled, proxy_traffic_events_for_project_with_persisted,
+    record_reverse_proxy_sidecar_status, resource_metrics_latest_for_config,
+    resource_metrics_series_for_project, restart_service, save_config, send_service_input,
+    service_input_attached, service_log_attached, service_logs_tail, service_ports,
+    service_runtime_status, service_terminal_attached, start_project_all, start_service,
+    stop_project_all, stop_service, sync_resource_metrics_sampler, sync_reverse_proxy,
+    update_project, AddProjectInput, AgentApiAuditEvent, AgentApiSettings, ContainerServiceConfig,
+    DoctorFixAction, DoctorIssue, DoctorLevel, IncidentTimelineEvent, LoopboxConfig, OpenTarget,
+    ProjectConfig, ProxyCaptureMode, ProxyEndpointProtocol, ReverseProxyStatus, ServiceConfig,
+    ServiceEntry, ServicePortEntry, ServiceResourceSample, ServiceRuntimeKind,
+    ServiceRuntimeSnapshot, ServiceRuntimeState, UpdateProjectInput,
 };
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header::AUTHORIZATION, StatusCode};
@@ -35,6 +36,8 @@ const DEFAULT_REQUEST_LIMIT: usize = 200;
 const MAX_REQUEST_LIMIT: usize = 2_000;
 const DEFAULT_RESOURCE_METRICS_LIMIT: usize = 1_000;
 const MAX_RESOURCE_METRICS_LIMIT: usize = 20_000;
+const DEFAULT_INCIDENT_LIMIT: usize = 100;
+const MAX_INCIDENT_LIMIT: usize = 500;
 const TOKEN_FILE_NAME: &str = "agent-api-token";
 const DISCOVERY_FILE_NAME: &str = "agent-api.json";
 const AGENT_API_VERSION: &str = "v1";
@@ -319,6 +322,13 @@ struct ResourcesQuery {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct IncidentsQuery {
+    service: Option<String>,
+    window: Option<String>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 struct ProjectMutationQuery {
     #[serde(default)]
@@ -418,6 +428,15 @@ struct ProjectResourcesResponse {
     limit: usize,
     latest: Vec<ServiceResourceSampleDto>,
     samples: Vec<ServiceResourceSampleDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProjectIncidentsResponse {
+    project: String,
+    service: Option<String>,
+    window: String,
+    limit: usize,
+    events: Vec<IncidentTimelineEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -571,14 +590,15 @@ Recommended agent workflow:\n\
 4) GET /v1/projects\n\
 5) GET /v1/projects/{{project}}\n\
 6) GET /v1/projects/{{project}}/runtime\n\
-7) Only when needed: GET /v1/projects/{{project}}/logs?service={{svc}}&limit=50\n\
-8) Only when needed: GET /v1/projects/{{project}}/requests?service={{svc}}&limit=50\n\
-9) Config mutations: POST /v1/projects | PUT /v1/projects/{{project}}\n\
-10) Runtime control: POST /v1/projects/{{project}}/start | /stop | /restart\n\
-11) Service control: POST /v1/projects/{{project}}/services/{{service}}/start | /stop | /restart | /input\n\n\
+7) For debugging: GET /v1/projects/{{project}}/incidents?window=1h&limit=100 before pulling broader evidence\n\
+8) Only when needed: GET /v1/projects/{{project}}/logs?service={{svc}}&limit=50\n\
+9) Only when needed: GET /v1/projects/{{project}}/requests?service={{svc}}&limit=50\n\
+10) Config mutations: POST /v1/projects | PUT /v1/projects/{{project}}\n\
+11) Runtime control: POST /v1/projects/{{project}}/start | /stop | /restart\n\
+12) Service control: POST /v1/projects/{{project}}/services/{{service}}/start | /stop | /restart | /input\n\n\
 Agent behavior:\n\
 - Prefer Loopbox-managed hostnames and Loopbox config over guessing ports.\n\
-- Prefer project/runtime inspection before reading logs.\n\
+- Prefer project/runtime and incident timeline inspection before reading raw logs, requests, or resources.\n\
 - Use runtime input only when a service reports input_attached=true; terminal_attached is UI-only in v1 and terminal frames are not exposed over this API.\n\
 - Use the OpenAPI document for exact schemas and endpoint details.\n\
 - Remember that request capture may be empty or disabled depending on local settings.\n\
@@ -590,7 +610,7 @@ Add or update a short \"Loopbox Agent API\" section in AGENTS.md or CLAUDE.md wi
 - base_url\n\
 - openapi_url\n\
 - auth mode and token path (if enabled)\n\
-- the core workflow: health -> meta -> doctor -> projects -> project detail -> runtime -> logs/requests/input only when needed"
+- the core workflow: health -> meta -> doctor -> projects -> project detail -> runtime -> incidents -> logs/requests/input only when needed"
     )
 }
 
@@ -1878,6 +1898,48 @@ fn openapi_component_schemas() -> serde_json::Value {
                 "events": { "type": "array", "items": { "type": "object" } }
             }
         },
+        "ProjectIncidentsResponse": {
+            "type": "object",
+            "required": ["project", "window", "limit", "events"],
+            "properties": {
+                "project": { "type": "string" },
+                "service": { "type": "string", "nullable": true },
+                "window": { "type": "string", "enum": ["15m", "1h", "24h", "7d"] },
+                "limit": { "type": "integer" },
+                "events": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/IncidentTimelineEvent" }
+                }
+            }
+        },
+        "IncidentTimelineEvent": {
+            "type": "object",
+            "required": ["id", "occurred_at_unix_ms", "occurred_at_utc", "project_name", "severity", "kind", "summary", "evidence", "source"],
+            "properties": {
+                "id": { "type": "string" },
+                "occurred_at_unix_ms": { "type": "integer", "format": "uint64" },
+                "occurred_at_utc": { "type": "string" },
+                "project_name": { "type": "string" },
+                "service_name": { "type": "string", "nullable": true },
+                "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+                "kind": { "type": "string", "enum": ["runtime_transition", "traffic_failure", "slow_request", "resource_pressure", "resource_unavailable"] },
+                "summary": { "type": "string" },
+                "detail": { "type": "string", "nullable": true },
+                "evidence": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/IncidentEvidence" }
+                },
+                "source": { "type": "string" }
+            }
+        },
+        "IncidentEvidence": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+                "type": { "type": "string", "enum": ["runtime_snapshot", "request_summary", "resource_sample_summary", "log_excerpt"] }
+            },
+            "additionalProperties": true
+        },
         "MutationResponse": {
             "type": "object",
             "required": ["project", "action", "results"],
@@ -2111,6 +2173,19 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                     "security": get_security
                 }
             },
+            format!("/{AGENT_API_VERSION}/projects/{{project}}/incidents"): {
+                "get": {
+                    "summary": "Project incident timeline",
+                    "parameters": [
+                        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+                        { "name": "service", "in": "query", "required": false, "schema": { "type": "string" } },
+                        { "name": "window", "in": "query", "required": false, "schema": { "type": "string", "enum": ["15m", "1h", "24h", "7d"], "default": "1h" } },
+                        { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 500 } }
+                    ],
+                    "responses": { "200": openapi_json_response("ProjectIncidentsResponse") },
+                    "security": get_security
+                }
+            },
             format!("/{AGENT_API_VERSION}/projects/{{project}}/logs"): {
                 "get": {
                     "summary": "Service logs",
@@ -2261,6 +2336,10 @@ mod tests {
                 vec!["get"],
             ),
             (
+                format!("/{AGENT_API_VERSION}/projects/{{project}}/incidents"),
+                vec!["get"],
+            ),
+            (
                 format!("/{AGENT_API_VERSION}/projects/{{project}}/logs"),
                 vec!["get"],
             ),
@@ -2341,6 +2420,8 @@ mod tests {
         assert!(schemas.contains_key("DoctorResponse"));
         assert!(schemas.contains_key("ProjectRuntimeResponse"));
         assert!(schemas.contains_key("ProjectResourcesResponse"));
+        assert!(schemas.contains_key("ProjectIncidentsResponse"));
+        assert!(schemas.contains_key("IncidentTimelineEvent"));
         assert!(schemas.contains_key("ServiceResourceSampleDto"));
         assert!(schemas.contains_key("ProjectCreateRequest"));
         assert!(schemas.contains_key("ServiceInputRequest"));
@@ -2369,6 +2450,11 @@ mod tests {
             spec["paths"][format!("/{AGENT_API_VERSION}/projects/{{project}}/resources")]["get"]
                 ["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/ProjectResourcesResponse"
+        );
+        assert_eq!(
+            spec["paths"][format!("/{AGENT_API_VERSION}/projects/{{project}}/incidents")]["get"]
+                ["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ProjectIncidentsResponse"
         );
     }
 

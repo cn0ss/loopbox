@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.3.3 - 2026-05-12
+
+### Added
+- Added a per-sandbox Topology tab that maps services, declared dependencies, HTTP ingress, proxy endpoints, runtime health, incidents, resource metrics, and recent traffic in one read-only operational view.
+- Added Incident Timeline diagnostics that correlate runtime transitions, traffic failures, slow requests, resource pressure, and log excerpts.
+- Added Diagnosis Sessions for starting agent-assisted investigations from sandboxes, runtime alerts, and incident events, with durable reports and resolution tracking.
 
 ## v0.3.2 - 2026-05-05
 

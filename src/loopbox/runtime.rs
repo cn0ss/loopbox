@@ -63,7 +63,7 @@ pub enum ServiceRuntimeState {
     Crashed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceRuntimeSnapshot {
     pub project: String,
     pub service: String,
@@ -155,10 +155,17 @@ static RUNTIME_LOG_META_REGISTRY_PATH: OnceLock<PathBuf> = OnceLock::new();
 static RUNTIME_SERVICE_OPS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static RUNTIME_LOG_META_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PortOwner {
-    pid: u32,
-    command: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicePortOwner {
+    pub pid: u32,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServicePortConflict {
+    pub bind_ip: String,
+    pub port: u16,
+    pub owner: Option<ServicePortOwner>,
 }
 
 #[derive(Debug)]
@@ -479,7 +486,7 @@ pub fn cleanup_stale_runtime_processes() -> Result<usize, String> {
             exit_code: None,
             last_error: None,
         };
-        store.history.insert(entry.key, snapshot);
+        upsert_runtime_history(&mut store, entry.key, snapshot);
     }
 
     Ok(removed_entries)
@@ -524,7 +531,8 @@ pub fn start_service(
                     } else {
                         ServiceRuntimeState::Crashed
                     };
-                    store.history.insert(
+                    upsert_runtime_history(
+                        &mut store,
                         key.clone(),
                         ServiceRuntimeSnapshot {
                             project: project_name.to_string(),
@@ -539,7 +547,8 @@ pub fn start_service(
                     let _ = forget_runtime_pid(&key);
                 }
                 Err(err) => {
-                    store.history.insert(
+                    upsert_runtime_history(
+                        &mut store,
                         key.clone(),
                         ServiceRuntimeSnapshot {
                             project: project_name.to_string(),
@@ -634,7 +643,7 @@ pub fn start_service(
         let mut store = runtime_store()
             .lock()
             .map_err(|_| "Runtime store lock poisoned.".to_string())?;
-        store.history.insert(key, snapshot.clone());
+        upsert_runtime_history(&mut store, key, snapshot.clone());
         return Ok(snapshot);
     }
 
@@ -696,7 +705,7 @@ pub fn start_service(
             process_group_leader: crate::platform::runtime::supports_process_groups(),
         },
     );
-    store.history.insert(key, snapshot.clone());
+    upsert_runtime_history(&mut store, key, snapshot.clone());
     if let Err(err) = remember_runtime_pid(RuntimePidRememberInput {
         project_name,
         service_name,
@@ -765,7 +774,7 @@ pub fn stop_service(
         let mut store = runtime_store()
             .lock()
             .map_err(|_| "Runtime store lock poisoned.".to_string())?;
-        store.history.insert(key.clone(), snapshot.clone());
+        upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
         if let Some(path) = &running.input_path {
             remove_service_input_endpoint(path);
         }
@@ -782,7 +791,7 @@ pub fn stop_service(
         let mut store = runtime_store()
             .lock()
             .map_err(|_| "Runtime store lock poisoned.".to_string())?;
-        store.history.insert(key.clone(), snapshot.clone());
+        upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
         let _ = forget_runtime_pid(&key);
         return Ok(snapshot);
     }
@@ -808,7 +817,7 @@ pub fn stop_service(
             let mut store = runtime_store()
                 .lock()
                 .map_err(|_| "Runtime store lock poisoned.".to_string())?;
-            store.history.insert(key.clone(), snapshot.clone());
+            upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
             if let Some(path) = &entry.input_path {
                 remove_service_input_endpoint(Path::new(path));
             }
@@ -856,6 +865,105 @@ pub fn restart_service(
         ));
     }
     start_service(config, project_name, service_name)
+}
+
+pub fn service_port_conflicts(
+    config: &LoopboxConfig,
+    project_name: &str,
+    service_name: &str,
+) -> Result<Vec<ServicePortConflict>, String> {
+    let project = config
+        .projects
+        .get(project_name)
+        .ok_or_else(|| format!("Project '{project_name}' not found."))?;
+    let service = project
+        .services
+        .iter()
+        .find(|service| service.name == service_name)
+        .ok_or_else(|| {
+            format!("Service '{service_name}' not found in project '{project_name}'.")
+        })?;
+
+    let mut conflicts = Vec::new();
+    for port_entry in service_ports(service) {
+        if port_reachable_with_targets(port_entry.port, std::slice::from_ref(&project.ip), 1, 120) {
+            conflicts.push(ServicePortConflict {
+                bind_ip: project.ip.clone(),
+                port: port_entry.port,
+                owner: describe_port_owner(&project.ip, port_entry.port),
+            });
+        }
+    }
+
+    Ok(conflicts)
+}
+
+pub fn kill_service_port_owner(
+    config: &LoopboxConfig,
+    project_name: &str,
+    service_name: &str,
+    port: u16,
+    expected_pid: u32,
+) -> Result<(), String> {
+    if expected_pid == 0 {
+        return Err("Refusing to kill invalid pid 0.".to_string());
+    }
+
+    let project = config
+        .projects
+        .get(project_name)
+        .ok_or_else(|| format!("Project '{project_name}' not found."))?;
+    let service = project
+        .services
+        .iter()
+        .find(|service| service.name == service_name)
+        .ok_or_else(|| {
+            format!("Service '{service_name}' not found in project '{project_name}'.")
+        })?;
+    if !service_ports(service)
+        .iter()
+        .any(|port_entry| port_entry.port == port)
+    {
+        return Err(format!(
+            "Port {port} is not configured for service '{service_name}' in project '{project_name}'."
+        ));
+    }
+
+    let targets = std::slice::from_ref(&project.ip);
+    if !port_reachable_with_targets(port, targets, 1, 120) {
+        return Err(format!(
+            "Port {port} on {} is no longer in use.",
+            project.ip
+        ));
+    }
+
+    let Some(owner) = describe_port_owner(&project.ip, port) else {
+        return Err(format!(
+            "Port {port} on {} is in use, but Loopbox could not identify the owning process.",
+            project.ip
+        ));
+    };
+    if owner.pid != expected_pid {
+        return Err(format!(
+            "Port {port} on {} is now owned by pid {}: {}, expected pid {expected_pid}.",
+            project.ip, owner.pid, owner.command
+        ));
+    }
+
+    terminate_pid_if_alive(owner.pid, false)?;
+    thread::sleep(Duration::from_millis(140));
+
+    if port_reachable_with_targets(port, targets, 1, 120) {
+        let owner_detail = describe_port_owner(&project.ip, port)
+            .map(|owner| format!(" (pid {}: {})", owner.pid, owner.command))
+            .unwrap_or_default();
+        return Err(format!(
+            "Port {port} on {} is still in use after killing pid {expected_pid}{owner_detail}.",
+            project.ip
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn send_service_input(
@@ -1303,7 +1411,7 @@ pub fn service_runtime_status(
                         exit_code: None,
                         last_error: None,
                     };
-                    store.history.insert(key.clone(), snapshot.clone());
+                    upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
                     store.running.insert(key.clone(), running);
                     return Ok(snapshot);
                 }
@@ -1321,7 +1429,7 @@ pub fn service_runtime_status(
                         exit_code: status.code(),
                         last_error: None,
                     };
-                    store.history.insert(key.clone(), snapshot.clone());
+                    upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
                     let _ = forget_runtime_pid(&runtime_key(project_name, service_name));
                     return Ok(snapshot);
                 }
@@ -1335,7 +1443,7 @@ pub fn service_runtime_status(
                         exit_code: None,
                         last_error: Some(format!("Failed to query process status: {err}")),
                     };
-                    store.history.insert(key.clone(), snapshot.clone());
+                    upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
                     let _ = forget_runtime_pid(&runtime_key(project_name, service_name));
                     return Ok(snapshot);
                 }
@@ -1374,7 +1482,7 @@ pub fn service_runtime_status(
             let mut store = runtime_store()
                 .lock()
                 .map_err(|_| "Runtime store lock poisoned.".to_string())?;
-            store.history.insert(key.clone(), snapshot.clone());
+            upsert_runtime_history(&mut store, key.clone(), snapshot.clone());
             return Ok(snapshot);
         }
         Ok(None) => {}
@@ -1396,7 +1504,7 @@ pub fn service_runtime_status(
                 pid: None,
                 ..previous
             };
-            store.history.insert(key, snapshot.clone());
+            upsert_runtime_history(&mut store, key, snapshot.clone());
             return Ok(snapshot);
         }
         return Ok(previous);
@@ -1599,6 +1707,16 @@ fn runtime_service_ops() -> &'static Mutex<HashSet<String>> {
 
 fn runtime_log_meta_io_lock() -> &'static Mutex<()> {
     RUNTIME_LOG_META_IO_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn upsert_runtime_history(store: &mut RuntimeStore, key: String, snapshot: ServiceRuntimeSnapshot) {
+    let previous = store.history.get(&key).cloned();
+    if let Err(err) =
+        crate::loopbox::record_runtime_incident_transition(previous.as_ref(), &snapshot)
+    {
+        eprintln!("Loopbox incident timeline warning: {err}");
+    }
+    store.history.insert(key, snapshot);
 }
 
 fn begin_service_operation(key: &str) -> Result<RuntimeServiceOpGuard, String> {
@@ -2559,10 +2677,10 @@ fn force_release_service_port(
     ))
 }
 
-fn describe_port_owner(bind_ip: &str, port: u16) -> Option<PortOwner> {
+fn describe_port_owner(bind_ip: &str, port: u16) -> Option<ServicePortOwner> {
     let pid = listening_pid_for_port(bind_ip, port)?;
     let command = process_command_for_pid(pid).unwrap_or_else(|| "unknown".to_string());
-    Some(PortOwner { pid, command })
+    Some(ServicePortOwner { pid, command })
 }
 
 fn listening_pid_for_port(bind_ip: &str, port: u16) -> Option<u32> {

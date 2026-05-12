@@ -10,6 +10,7 @@ pub(crate) enum Page {
     NewSandbox,
     Agents,
     Runtime,
+    Diagnostics,
     AgentApiAudit,
     System,
     Settings,
@@ -19,6 +20,8 @@ pub(crate) enum Page {
 #[allow(dead_code)]
 pub(super) enum DetailTab {
     Services,
+    Topology,
+    Timeline,
     Resources,
     Logs,
     Traffic,

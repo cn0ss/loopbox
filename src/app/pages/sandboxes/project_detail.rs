@@ -55,6 +55,47 @@ pub(super) fn ProjectDetail(
         }
     });
 
+    let pn_port_conflicts = project_name.clone();
+    let service_port_conflicts = use_resource(move || {
+        let pn_port_conflicts = pn_port_conflicts.clone();
+        let _tick = runtime_tick();
+        let cfg = config();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut conflicts = BTreeMap::new();
+                if let Some(proj) = cfg.projects.get(&pn_port_conflicts) {
+                    for service in &proj.services {
+                        let Ok(status) = loopbox::service_runtime_status(
+                            &cfg,
+                            &pn_port_conflicts,
+                            &service.name,
+                        ) else {
+                            continue;
+                        };
+                        if !matches!(
+                            status.state,
+                            ServiceRuntimeState::Stopped | ServiceRuntimeState::Crashed
+                        ) {
+                            continue;
+                        }
+                        let entries = loopbox::service_port_conflicts(
+                            &cfg,
+                            &pn_port_conflicts,
+                            &service.name,
+                        )
+                        .unwrap_or_default();
+                        if !entries.is_empty() {
+                            conflicts.insert(service.name.clone(), entries);
+                        }
+                    }
+                }
+                conflicts
+            })
+            .await
+            .unwrap_or_default()
+        }
+    });
+
     // ── Derived: Live Logs (reactive via tick) ──
     let pn_logs = project_name.clone();
     let active_tab_for_live_logs = active_tab;
@@ -166,6 +207,7 @@ pub(super) fn ProjectDetail(
     // ── Snapshots ──
     let tab = active_tab();
     let status_snapshot = runtime_status().unwrap_or_default();
+    let port_conflicts_snapshot = service_port_conflicts().unwrap_or_default();
     let service_key_inputs_snapshot = service_key_inputs();
     let logs_snapshot = live_logs().unwrap_or_default();
     let total_logs_snapshot = total_log_count().unwrap_or_default();
@@ -280,6 +322,8 @@ pub(super) fn ProjectDetail(
 
     let mut tab_items = vec![
         (DetailTab::Services, "Services"),
+        (DetailTab::Topology, "Topology"),
+        (DetailTab::Timeline, "Timeline"),
         (DetailTab::Resources, "Resources"),
         (DetailTab::Logs, "Logs"),
         (DetailTab::Environment, "Environment"),
@@ -318,12 +362,39 @@ pub(super) fn ProjectDetail(
                 }
                 div { class: "detail-header-actions detail-agent-actions",
                     button {
+                        class: "btn btn-sm btn-primary",
+                        onclick: {
+                            let prompt_project = project_name.clone();
+                            move |_| {
+                                match loopbox::create_diagnosis_session(
+                                    &config(),
+                                    loopbox::CreateDiagnosisSessionInput {
+                                        project_name: prompt_project.clone(),
+                                        service_name: None,
+                                        source: loopbox::DiagnosisSource::Sandbox,
+                                        window: "1h".to_string(),
+                                        incident_id: None,
+                                        title: None,
+                                    },
+                                ) {
+                                    Ok(session) => {
+                                        let prompt = loopbox::diagnosis_prompt_for_session(&session);
+                                        loopbox::codex_agents_prefill_diagnosis_prompt(session.id, prompt);
+                                        current_page.set(Page::Agents);
+                                    }
+                                    Err(err) => notice.set(Some(Notice::error(err))),
+                                }
+                            }
+                        },
+                        "Start Diagnosis"
+                    }
+                    button {
                         class: "btn btn-sm btn-outline",
                         onclick: {
                             let prompt_project = project_name.clone();
                             move |_| {
                                 loopbox::codex_agents_prefill_prompt(format!(
-                                    "Summarize sandbox `{prompt_project}` and its current runtime health."
+                                    "Summarize sandbox `{prompt_project}` and its current runtime health. Inspect incidents first, then runtime, logs, requests, and resources."
                                 ));
                                 current_page.set(Page::Agents);
                             }
@@ -355,6 +426,19 @@ pub(super) fn ProjectDetail(
                             }
                         },
                         "Diagnose Traffic"
+                    }
+                    button {
+                        class: "btn btn-sm btn-outline",
+                        onclick: {
+                            let prompt_project = project_name.clone();
+                            move |_| {
+                                loopbox::codex_agents_prefill_prompt(format!(
+                                    "Diagnose recent warning and critical incidents for sandbox `{prompt_project}`. Start with `loopbox_incidents` for the 1h window, then inspect logs, requests, runtime, and resources as evidence."
+                                ));
+                                current_page.set(Page::Agents);
+                            }
+                        },
+                        "Diagnose Incidents"
                     }
                     button {
                         class: "btn btn-sm btn-outline",
@@ -496,6 +580,10 @@ pub(super) fn ProjectDetail(
                                     .get(&service.name)
                                     .cloned()
                                     .unwrap_or_default();
+                                let port_conflicts = port_conflicts_snapshot
+                                    .get(&service.name)
+                                    .cloned()
+                                    .unwrap_or_default();
 
                                 rsx! {
                                     div { class: "svc-card {border_class}", key: "{service.name}",
@@ -523,6 +611,58 @@ pub(super) fn ProjectDetail(
                                             }
                                         }
                                         div { class: "svc-card-cmd", "{execution_label}" }
+                                        if !port_conflicts.is_empty() {
+                                            div { class: "runtime-port-conflict-list svc-port-conflict-list",
+                                                for conflict in port_conflicts.iter() {
+                                                    {{
+                                                        let conflict = conflict.clone();
+                                                        let owner = conflict.owner.clone();
+                                                        let conflict_key = format!("{}:{}", conflict.bind_ip, conflict.port);
+                                                        rsx! {
+                                                            div { class: "runtime-port-conflict", key: "{conflict_key}",
+                                                                span { class: "runtime-port-conflict-icon", "!" }
+                                                                span { class: "runtime-port-conflict-text",
+                                                                    if let Some(owner) = owner.as_ref() {
+                                                                        "Port {conflict.port} blocked by pid {owner.pid}: {owner.command}"
+                                                                    } else {
+                                                                        "Port {conflict.port} blocked by an unknown process"
+                                                                    }
+                                                                }
+                                                                if let Some(owner) = owner {
+                                                                    button {
+                                                                        class: "btn btn-sm btn-danger",
+                                                                        onclick: {
+                                                                            let pn = project_name.clone();
+                                                                            let svc = service.name.clone();
+                                                                            let port = conflict.port;
+                                                                            let expected_pid = owner.pid;
+                                                                            move |_| {
+                                                                                match loopbox::kill_service_port_owner(
+                                                                                    &config(),
+                                                                                    &pn,
+                                                                                    &svc,
+                                                                                    port,
+                                                                                    expected_pid,
+                                                                                ) {
+                                                                                    Ok(()) => {
+                                                                                        notice.set(Some(Notice::info(format!(
+                                                                                            "Killed pid {expected_pid} blocking port {port} for '{svc}'."
+                                                                                        ))));
+                                                                                        force_tick();
+                                                                                    }
+                                                                                    Err(err) => notice.set(Some(Notice::error(err))),
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                        "Kill"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }}
+                                                }
+                                            }
+                                        }
                                         div { class: "svc-card-actions",
                                             if action_flags.can_stop || action_flags.can_restart {
                                                 button {
@@ -757,6 +897,28 @@ pub(super) fn ProjectDetail(
                             }}
                         }
                     }
+                }
+            }
+
+            if tab == DetailTab::Topology {
+                ProjectDetailTopologyTab {
+                    project_name: project_name.clone(),
+                    project: project.clone(),
+                    config,
+                    notice,
+                    runtime_tick,
+                    current_page,
+                }
+            }
+
+            if tab == DetailTab::Timeline {
+                ProjectDetailTimelineTab {
+                    project_name: project_name.clone(),
+                    project: project.clone(),
+                    config,
+                    notice,
+                    runtime_tick,
+                    current_page,
                 }
             }
 

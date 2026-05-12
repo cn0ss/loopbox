@@ -1,6 +1,6 @@
 use super::{
-    add_project, doctor_report, load_config, open_url_for, preview_add_project,
-    project_primary_host, proxy_traffic_events_for_project_with_persisted,
+    add_project, doctor_report, incident_timeline_for_project, load_config, open_url_for,
+    preview_add_project, project_primary_host, proxy_traffic_events_for_project_with_persisted,
     resource_metrics_series_for_project, restart_service, save_config, send_service_input,
     service_logs_tail, service_ports, service_runtime_status, start_project_all, start_service,
     stop_project_all, stop_service, update_project, AddProjectInput, DoctorLevel, LoopboxConfig,
@@ -63,6 +63,18 @@ struct ResourcesArgs {
     #[schemars(description = "Metrics window: 15m, 1h, 24h, or 7d")]
     window: Option<String>,
     #[schemars(description = "Maximum samples to return. Loopbox clamps this to 1..200.")]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct IncidentsArgs {
+    #[schemars(description = "Loopbox sandbox/project name")]
+    project: String,
+    #[schemars(description = "Optional service name filter")]
+    service: Option<String>,
+    #[schemars(description = "Incident window: 15m, 1h, 24h, or 7d")]
+    window: Option<String>,
+    #[schemars(description = "Maximum incident records to return. Loopbox clamps this to 1..500.")]
     limit: Option<usize>,
 }
 
@@ -272,6 +284,31 @@ impl LoopboxMcpServer {
                 })
             }),
         )
+    }
+
+    #[tool(description = "Read the Loopbox incident timeline for a project or service.")]
+    fn loopbox_incidents(&self, args: Parameters<IncidentsArgs>) -> CallToolResult {
+        let args = args.0;
+        let limit = args.limit.unwrap_or(100).clamp(1, 500);
+        let window = args.window.unwrap_or_else(|| "1h".to_string());
+        tool_value(load_config().and_then(|config| {
+            incident_timeline_for_project(
+                &config,
+                &args.project,
+                args.service.as_deref(),
+                &window,
+                limit,
+            )
+            .map(|events| {
+                json!({
+                    "project": args.project,
+                    "service": args.service,
+                    "window": window,
+                    "limit": limit,
+                    "events": events,
+                })
+            })
+        }))
     }
 
     #[tool(description = "Validate a proposed Loopbox sandbox/project config without saving it.")]
@@ -829,6 +866,7 @@ mod tests {
             "loopbox_validate_project_config",
             "loopbox_create_project",
             "loopbox_update_project",
+            "loopbox_incidents",
         ] {
             assert!(
                 tool_names.iter().any(|name| name == expected),

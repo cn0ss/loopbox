@@ -1,6 +1,6 @@
 # Loopbox Codex Agents
 
-Loopbox includes a native **Agents** page that embeds `codex app-server` over stdio. It is intended for interactive Loopbox work: asking questions about sandboxes, reading logs, inspecting runtime state, diagnosing traffic, and approving controlled project/runtime mutations.
+Loopbox includes a native **Agents** page that embeds `codex app-server` over stdio. It is intended for interactive Loopbox work: asking questions about sandboxes, reading incident timelines, inspecting runtime state, reading logs, diagnosing traffic, and approving controlled project/runtime mutations.
 
 ## Runtime Model
 
@@ -41,6 +41,7 @@ The hidden `loopbox __loopbox_mcp_server` subcommand exposes these MCP tools:
 - `loopbox_list_projects`
 - `loopbox_read_project`
 - `loopbox_runtime`
+- `loopbox_incidents`
 - `loopbox_logs`
 - `loopbox_requests`
 - `loopbox_resources`
@@ -61,11 +62,20 @@ Read-only tools run directly. Mutating tools request MCP elicitation first; the 
 
 Each new Codex thread starts with Loopbox-specific developer instructions:
 
-- Use Loopbox MCP tools for sandbox, runtime, log, request, and resource questions.
+- Use Loopbox MCP tools for sandbox, runtime, incident, log, request, and resource questions.
+- Inspect `loopbox_incidents` first when diagnosing a failed or unhealthy service, then drill into logs, requests, runtime, and resources.
 - Prefer project hostnames returned by Loopbox over guessed localhost ports.
 - Fetch logs with explicit limits.
 - Ask before destructive, broad, or mutating changes.
 - Use MCP elicitation for project/runtime mutations.
+
+## Diagnosis Sessions
+
+Loopbox can create a local diagnosis session from a sandbox, runtime alert, or incident timeline event. A session stores a bounded evidence snapshot, pre-fills Agents with a targeted MCP-first diagnostic prompt, links the Codex thread after the prompt is sent, and can be marked resolved or archived from the Diagnostics page.
+
+Stored evidence is intentionally a handoff snapshot. Agents should still call Loopbox MCP tools for fresh incidents, runtime state, logs, requests, and resources before recommending a fix or mutation.
+
+When a diagnosis-linked Codex turn completes, Loopbox stores the final non-empty agent answer as a durable diagnosis report on the session. The Diagnostics page shows the captured summary, full agent report, thread link, copy actions, and a resolution note field that is saved when the session is marked resolved.
 
 ## Manual Check
 
@@ -75,3 +85,4 @@ Each new Codex thread starts with Loopbox-specific developer instructions:
 4. Trigger a mutating request, decline it, and confirm no change happened.
 5. Trigger another mutation, accept it, and confirm the runtime/config changed as expected.
 6. Interrupt an active turn and send a follow-up message in the same thread.
+7. Start a diagnosis from an incident, send the prefilled prompt, confirm the Diagnostics page links the thread and stores the agent report, then add a resolution note and mark the session resolved.

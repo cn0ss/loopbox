@@ -11,9 +11,10 @@ use crate::app::utils::{
     preview_project_name, preview_service_name, preview_suffix,
 };
 use crate::loopbox::{
-    self, AddProjectInput, DoctorIssue, LoopboxConfig, OpenTarget, ProjectConfig,
-    ProxyEndpointConfig, ProxyEndpointProtocol, ServiceConfig, ServiceEntry, ServicePortEntry,
-    ServiceRuntimeSnapshot, ServiceRuntimeState, UpdateProjectInput,
+    self, AddProjectInput, DoctorIssue, IncidentEvidence, IncidentKind, IncidentSeverity,
+    IncidentTimelineEvent, LoopboxConfig, OpenTarget, ProjectConfig, ProxyEndpointConfig,
+    ProxyEndpointProtocol, ServiceConfig, ServiceEntry, ServicePortEntry, ServiceRuntimeSnapshot,
+    ServiceRuntimeState, UpdateProjectInput,
 };
 use dioxus::html::input_data::keyboard_types::{Key, Modifiers};
 use dioxus::prelude::*;
@@ -28,6 +29,8 @@ mod filesystem;
 mod helpers;
 mod project_detail;
 mod project_detail_features;
+mod timeline;
+mod topology;
 mod wizard;
 mod wizard_discovery;
 mod wizard_features;
@@ -37,6 +40,8 @@ use filesystem::*;
 use helpers::*;
 use project_detail::*;
 use project_detail_features::*;
+use timeline::*;
+use topology::*;
 use wizard::blank_service_entry as wizard_blank_service_entry;
 use wizard::*;
 use wizard_discovery::*;

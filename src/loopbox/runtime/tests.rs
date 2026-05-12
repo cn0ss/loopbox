@@ -1,6 +1,9 @@
 use super::*;
 use crate::loopbox::{GlobalConfig, ProjectConfig, ProxyEndpointProtocol, ServicePortConfig};
 use std::collections::BTreeMap;
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,6 +30,14 @@ fn runtime_config_with_port(
     command: &str,
     service_port: Option<u16>,
 ) -> (LoopboxConfig, String, String) {
+    runtime_config_with_ip_and_port(command, "127.0.0.20", service_port)
+}
+
+fn runtime_config_with_ip_and_port(
+    command: &str,
+    project_ip: &str,
+    service_port: Option<u16>,
+) -> (LoopboxConfig, String, String) {
     let project = format!("runtime-{}", nonce());
     let service = "backend".to_string();
     let service_cfg = ServiceConfig {
@@ -51,7 +62,7 @@ fn runtime_config_with_port(
                 project.clone(),
                 ProjectConfig {
                     dir: "/tmp".to_string(),
-                    ip: "127.0.0.20".to_string(),
+                    ip: project_ip.to_string(),
                     services: vec![service_cfg],
                     default_open_service: Some(service.clone()),
                     proxy_traffic_capture_enabled: None,
@@ -64,6 +75,40 @@ fn runtime_config_with_port(
         project,
         service,
     )
+}
+
+fn reserve_loopback_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve loopback port");
+    listener.local_addr().expect("listener address").port()
+}
+
+fn random_test_port() -> u16 {
+    let seed = nonce();
+    30_000 + (seed.bytes().map(u16::from).sum::<u16>() % 20_000)
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_port_owner(bind_ip: &str, port: u16, timeout: Duration) -> Option<u32> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if let Some(pid) = listening_pid_for_port(bind_ip, port) {
+            return Some(pid);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    listening_pid_for_port(bind_ip, port)
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_ready_file(path: &PathBuf, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if path.exists() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    path.exists()
 }
 
 fn runtime_config(command: &str) -> (LoopboxConfig, String, String) {
@@ -137,6 +182,115 @@ fn drop_runtime_tracking(project: &str, service: &str) {
     store.running.remove(&key);
     store.history.remove(&key);
     store.log_buffers.remove(&key);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn service_port_conflicts_reports_current_port_owner() {
+    let port = reserve_loopback_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind blocked port");
+    let (config, project, service) =
+        runtime_config_with_ip_and_port("sleep 1", "127.0.0.1", Some(port));
+
+    let conflicts = service_port_conflicts(&config, &project, &service).expect("port conflicts");
+
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].bind_ip, "127.0.0.1");
+    assert_eq!(conflicts[0].port, port);
+    let owner = conflicts[0].owner.as_ref().expect("port owner");
+    assert_eq!(owner.pid, std::process::id());
+    assert!(!owner.command.is_empty());
+
+    drop(listener);
+}
+
+#[test]
+fn service_port_conflicts_ignores_unblocked_ports() {
+    let port = random_test_port();
+    let (config, project, service) =
+        runtime_config_with_ip_and_port("sleep 1", "127.0.0.1", Some(port));
+
+    let conflicts = service_port_conflicts(&config, &project, &service).expect("port conflicts");
+
+    assert!(conflicts.is_empty());
+}
+
+#[test]
+fn kill_service_port_owner_rejects_unconfigured_ports() {
+    let port = random_test_port();
+    let (config, project, service) =
+        runtime_config_with_ip_and_port("sleep 1", "127.0.0.1", Some(port));
+
+    let err = kill_service_port_owner(&config, &project, &service, port + 1, 1)
+        .expect_err("unconfigured port must fail");
+
+    assert!(err.contains("not configured"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn kill_service_port_owner_rejects_changed_owner_pid() {
+    let port = reserve_loopback_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind blocked port");
+    let (config, project, service) =
+        runtime_config_with_ip_and_port("sleep 1", "127.0.0.1", Some(port));
+
+    let err = kill_service_port_owner(&config, &project, &service, port, u32::MAX)
+        .expect_err("pid mismatch must fail");
+
+    assert!(err.contains("expected pid"));
+    assert!(pid_exists(std::process::id()));
+
+    drop(listener);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn kill_service_port_owner_releases_child_port_blocker() {
+    let port = reserve_loopback_port();
+    let ready_file = std::env::temp_dir().join(format!("loopbox-port-blocker-{}.ready", nonce()));
+    let mut child = Command::new(std::env::current_exe().expect("current test exe"))
+        .arg("runtime_port_blocker_child")
+        .arg("--ignored")
+        .env("LOOPBOX_PORT_BLOCKER_BIND", "127.0.0.1")
+        .env("LOOPBOX_PORT_BLOCKER_PORT", port.to_string())
+        .env("LOOPBOX_PORT_BLOCKER_READY", &ready_file)
+        .spawn()
+        .expect("spawn port blocker child");
+    assert!(wait_for_ready_file(&ready_file, Duration::from_secs(3)));
+
+    let owner_pid =
+        wait_for_port_owner("127.0.0.1", port, Duration::from_secs(3)).expect("port owner");
+    assert_eq!(owner_pid, child.id());
+    let (config, project, service) =
+        runtime_config_with_ip_and_port("sleep 1", "127.0.0.1", Some(port));
+
+    kill_service_port_owner(&config, &project, &service, port, owner_pid).expect("kill port owner");
+
+    assert!(wait_for_pid_exit(owner_pid, Duration::from_secs(3)));
+    assert!(wait_for_port_owner("127.0.0.1", port, Duration::from_millis(300)).is_none());
+
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&ready_file);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn runtime_port_blocker_child() {
+    let Ok(bind_ip) = std::env::var("LOOPBOX_PORT_BLOCKER_BIND") else {
+        return;
+    };
+    let port = std::env::var("LOOPBOX_PORT_BLOCKER_PORT")
+        .expect("port env")
+        .parse::<u16>()
+        .expect("valid port");
+    let ready_file = PathBuf::from(std::env::var("LOOPBOX_PORT_BLOCKER_READY").expect("ready env"));
+    let _listener = TcpListener::bind((bind_ip.as_str(), port)).expect("bind child listener");
+    std::fs::write(&ready_file, b"ready").expect("write ready file");
+    loop {
+        thread::sleep(Duration::from_secs(60));
+    }
 }
 
 #[test]

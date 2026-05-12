@@ -7,7 +7,7 @@ use crate::app::runtime_view::{
 use crate::app::terminal_window::{self, TerminalWindowConfig};
 use crate::app::utils::decode_service_input_sequence;
 use crate::loopbox::{
-    self, LoopboxConfig, OpenTarget, ServiceRuntimeKind, ServiceRuntimeSnapshot,
+    self, IncidentSeverity, LoopboxConfig, OpenTarget, ServiceRuntimeKind, ServiceRuntimeSnapshot,
     ServiceRuntimeState,
 };
 use dioxus::prelude::*;
@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn render_runtime_page(
     page: Page,
-    current_page: Signal<Page>,
+    mut current_page: Signal<Page>,
     runtime_filter_value: RuntimeFilter,
     mut runtime_filter: Signal<RuntimeFilter>,
     mut runtime_search: Signal<String>,
@@ -70,6 +70,9 @@ pub(in crate::app) fn render_runtime_page(
         hottest_service,
         largest_service,
         latest_sample_label,
+        incident_attention_count,
+        incident_critical_count,
+        incident_attention_project,
         project_rows,
     } = runtime_snapshot.unwrap_or_default();
 
@@ -167,6 +170,43 @@ pub(in crate::app) fn render_runtime_page(
                         RuntimeIcon { kind: RuntimeIconKind::Doctor }
                         span { class: "runtime-alert-label", "Doctor" }
                         span { "{doctor_issue_count} setup issue(s) may affect service routing or health." }
+                    }
+                }
+                if incident_attention_count > 0 {
+                    div { class: if incident_critical_count > 0 { "runtime-alert runtime-alert-warn" } else { "runtime-alert" },
+                        RuntimeIcon { kind: RuntimeIconKind::Alert }
+                        span { class: "runtime-alert-label", "Timeline" }
+                        if incident_critical_count > 0 {
+                            span { "{incident_critical_count} critical / {incident_attention_count} warning+ incident(s) in the last hour." }
+                        } else {
+                            span { "{incident_attention_count} warning incident(s) in the last hour." }
+                        }
+                        if let Some(project_name) = incident_attention_project.clone() {
+                            button {
+                                class: "runtime-alert-action",
+                                onclick: move |_| {
+                                    match loopbox::create_diagnosis_session(
+                                        &config(),
+                                        loopbox::CreateDiagnosisSessionInput {
+                                            project_name: project_name.clone(),
+                                            service_name: None,
+                                            source: loopbox::DiagnosisSource::RuntimeAlert,
+                                            window: "1h".to_string(),
+                                            incident_id: None,
+                                            title: Some("Diagnose runtime alert".to_string()),
+                                        },
+                                    ) {
+                                        Ok(session) => {
+                                            let prompt = loopbox::diagnosis_prompt_for_session(&session);
+                                            loopbox::codex_agents_prefill_diagnosis_prompt(session.id, prompt);
+                                            current_page.set(Page::Agents);
+                                        }
+                                        Err(err) => notice.set(Some(Notice::error(err))),
+                                    }
+                                },
+                                "Diagnose"
+                            }
+                        }
                     }
                 }
                 if !resource_metrics_enabled {
@@ -428,6 +468,13 @@ pub(in crate::app) fn render_runtime_page(
                                             }
                                         }
 
+                                        RuntimePortConflictAlerts {
+                                            row: row.clone(),
+                                            config,
+                                            notice,
+                                            runtime_tick,
+                                        }
+
                                         div { class: "runtime-card-footer",
                                             RuntimeServiceActions {
                                                 row: row.clone(),
@@ -485,6 +532,9 @@ struct RuntimePageSnapshot {
     hottest_service: String,
     largest_service: String,
     latest_sample_label: String,
+    incident_attention_count: usize,
+    incident_critical_count: usize,
+    incident_attention_project: Option<String>,
     project_rows: BTreeMap<String, Vec<RuntimeServiceRow>>,
 }
 
@@ -508,6 +558,9 @@ impl Default for RuntimePageSnapshot {
             hottest_service: "n/a".to_string(),
             largest_service: "n/a".to_string(),
             latest_sample_label: "n/a".to_string(),
+            incident_attention_count: 0,
+            incident_critical_count: 0,
+            incident_attention_project: None,
             project_rows: BTreeMap::new(),
         }
     }
@@ -578,6 +631,15 @@ fn build_runtime_page_snapshot(
             } else {
                 None
             };
+            let port_conflicts = if matches!(
+                snapshot.state,
+                ServiceRuntimeState::Stopped | ServiceRuntimeState::Crashed
+            ) {
+                loopbox::service_port_conflicts(&config_snapshot, project_name, &service.name)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let row = build_runtime_service_row(
                 project_name,
                 &project.ip,
@@ -588,6 +650,7 @@ fn build_runtime_page_snapshot(
                     input_attached,
                     terminal_attached,
                     resources,
+                    port_conflicts,
                 },
             );
             if runtime_row_matches(&row, runtime_filter_value, &search_value) {
@@ -686,6 +749,8 @@ fn build_runtime_page_snapshot(
     } else {
         format_sample_age(now_ms, latest_sample)
     };
+    let (incident_attention_count, incident_critical_count, incident_attention_project) =
+        runtime_incident_attention_counts(&config_snapshot);
 
     RuntimePageSnapshot {
         resource_metrics_enabled,
@@ -705,8 +770,46 @@ fn build_runtime_page_snapshot(
         hottest_service,
         largest_service,
         latest_sample_label,
+        incident_attention_count,
+        incident_critical_count,
+        incident_attention_project,
         project_rows,
     }
+}
+
+fn runtime_incident_attention_counts(
+    config_snapshot: &LoopboxConfig,
+) -> (usize, usize, Option<String>) {
+    let mut warning_or_critical = 0_usize;
+    let mut critical = 0_usize;
+    let mut first_warning_project = None::<String>;
+    let mut first_critical_project = None::<String>;
+    for project_name in config_snapshot.projects.keys() {
+        let Ok(events) =
+            loopbox::incident_timeline_for_project(config_snapshot, project_name, None, "1h", 100)
+        else {
+            continue;
+        };
+        for event in events {
+            match event.severity {
+                IncidentSeverity::Critical => {
+                    critical = critical.saturating_add(1);
+                    warning_or_critical = warning_or_critical.saturating_add(1);
+                    first_critical_project.get_or_insert_with(|| project_name.clone());
+                }
+                IncidentSeverity::Warning => {
+                    warning_or_critical = warning_or_critical.saturating_add(1);
+                    first_warning_project.get_or_insert_with(|| project_name.clone());
+                }
+                IncidentSeverity::Info => {}
+            }
+        }
+    }
+    (
+        warning_or_critical,
+        critical,
+        first_critical_project.or(first_warning_project),
+    )
 }
 
 fn runtime_page_uses_live_refresh(page: Page) -> bool {
@@ -873,6 +976,72 @@ fn RuntimeStatusPill(kind: RuntimeIconKind, label: String, count: usize, tone: S
             RuntimeIcon { kind }
             span { class: "runtime-status-label", "{label}" }
             strong { class: "runtime-status-count", "{count}" }
+        }
+    }
+}
+
+#[component]
+fn RuntimePortConflictAlerts(
+    row: RuntimeServiceRow,
+    config: Signal<LoopboxConfig>,
+    mut notice: Signal<Option<Notice>>,
+    mut runtime_tick: Signal<u64>,
+) -> Element {
+    if row.port_conflicts.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        div { class: "runtime-port-conflict-list",
+            for conflict in row.port_conflicts.iter() {
+                {{
+                    let conflict = conflict.clone();
+                    let owner = conflict.owner.clone();
+                    let conflict_key = format!("{}:{}", conflict.bind_ip, conflict.port);
+                    rsx! {
+                        div { class: "runtime-port-conflict", key: "{conflict_key}",
+                            RuntimeIcon { kind: RuntimeIconKind::Alert }
+                            span { class: "runtime-port-conflict-text",
+                                if let Some(owner) = owner.as_ref() {
+                                    "Port {conflict.port} blocked by pid {owner.pid}: {owner.command}"
+                                } else {
+                                    "Port {conflict.port} blocked by an unknown process"
+                                }
+                            }
+                            if let Some(owner) = owner {
+                                button {
+                                    class: "btn btn-sm btn-danger runtime-action-btn",
+                                    onclick: {
+                                        let pn = row.project_name.clone();
+                                        let svc = row.service_name.clone();
+                                        let port = conflict.port;
+                                        let expected_pid = owner.pid;
+                                        move |_| {
+                                            match loopbox::kill_service_port_owner(
+                                                &config(),
+                                                &pn,
+                                                &svc,
+                                                port,
+                                                expected_pid,
+                                            ) {
+                                                Ok(()) => {
+                                                    notice.set(Some(Notice::info(format!(
+                                                        "Killed pid {expected_pid} blocking port {port} for '{svc}'."
+                                                    ))));
+                                                    runtime_tick.with_mut(|tick| *tick = tick.wrapping_add(1));
+                                                }
+                                                Err(err) => notice.set(Some(Notice::error(err))),
+                                            }
+                                        }
+                                    },
+                                    RuntimeIcon { kind: RuntimeIconKind::Stop }
+                                    "Kill"
+                                }
+                            }
+                        }
+                    }
+                }}
+            }
         }
     }
 }

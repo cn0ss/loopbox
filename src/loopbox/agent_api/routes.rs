@@ -21,6 +21,10 @@ pub(super) fn build_router(state: AgentApiState) -> Router {
             get(project_resources_handler),
         )
         .route(
+            &format!("/{AGENT_API_VERSION}/projects/{{project}}/incidents"),
+            get(project_incidents_handler),
+        )
+        .route(
             &format!("/{AGENT_API_VERSION}/projects/{{project}}/logs"),
             get(project_logs_handler),
         )
@@ -295,6 +299,35 @@ async fn project_resources_handler(
         limit,
         latest,
         samples,
+    }))
+}
+
+async fn project_incidents_handler(
+    Path(project_name): Path<String>,
+    Query(query): Query<IncidentsQuery>,
+) -> Result<Json<ProjectIncidentsResponse>, ApiError> {
+    let config = load_config_api()?;
+    let project = get_project(&config, &project_name)?;
+    let service = query
+        .service
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(service_name) = service.as_ref() {
+        get_service(project, service_name)?;
+    }
+
+    let window = query.window.unwrap_or_else(|| "1h".to_string());
+    let limit = clamp_limit(query.limit, DEFAULT_INCIDENT_LIMIT, MAX_INCIDENT_LIMIT);
+    let events =
+        incident_timeline_for_project(&config, &project_name, service.as_deref(), &window, limit)
+            .map_err(ApiError::bad_request)?;
+
+    Ok(Json(ProjectIncidentsResponse {
+        project: project_name,
+        service,
+        window,
+        limit,
+        events,
     }))
 }
 
