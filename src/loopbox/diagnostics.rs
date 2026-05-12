@@ -6,6 +6,7 @@ use super::{
     ServiceRuntimeSnapshot,
 };
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -718,7 +719,7 @@ fn truncate_to_last<T>(values: &mut Vec<T>, limit: usize) {
 fn truncate_to_newest<T>(values: &mut Vec<T>, limit: usize, timestamp: impl Fn(&T) -> u64) {
     values.sort_by_key(|value| timestamp(value));
     truncate_to_last(values, limit);
-    values.sort_by(|left, right| timestamp(right).cmp(&timestamp(left)));
+    values.sort_by_key(|value| Reverse(timestamp(value)));
 }
 
 fn diagnostics_test_dir() -> &'static Mutex<Option<PathBuf>> {
@@ -1060,30 +1061,32 @@ mod tests {
 
     #[test]
     fn evidence_snapshot_filters_selected_incident_and_caps_collections() {
-        let mut snapshot = DiagnosisEvidenceSnapshot::default();
-        snapshot.selected_incident = Some(incident("selected", IncidentSeverity::Critical));
-        snapshot.incidents = (0..60)
-            .map(|index| incident(&format!("incident-{index}"), IncidentSeverity::Warning))
-            .collect();
-        snapshot.runtime = vec![ServiceRuntimeSnapshot {
-            project: "demo".to_string(),
-            service: "web".to_string(),
-            state: ServiceRuntimeState::Running,
-            pid: Some(123),
-            started_at: Some(1),
-            exit_code: None,
-            last_error: None,
-        }];
-        snapshot.log_tails = vec![DiagnosisLogTail {
-            service_name: "web".to_string(),
-            lines: (0..100).map(|index| format!("line-{index}")).collect(),
-        }];
-        snapshot.doctor_issues = vec![DiagnosisDoctorIssue {
-            level: DoctorLevel::Warning,
-            project: Some("demo".to_string()),
-            message: "Loopback alias missing.".to_string(),
-            fix_label: Some(DoctorFixAction::ApplySystemSetup.label().to_string()),
-        }];
+        let mut snapshot = DiagnosisEvidenceSnapshot {
+            selected_incident: Some(incident("selected", IncidentSeverity::Critical)),
+            incidents: (0..60)
+                .map(|index| incident(&format!("incident-{index}"), IncidentSeverity::Warning))
+                .collect(),
+            runtime: vec![ServiceRuntimeSnapshot {
+                project: "demo".to_string(),
+                service: "web".to_string(),
+                state: ServiceRuntimeState::Running,
+                pid: Some(123),
+                started_at: Some(1),
+                exit_code: None,
+                last_error: None,
+            }],
+            log_tails: vec![DiagnosisLogTail {
+                service_name: "web".to_string(),
+                lines: (0..100).map(|index| format!("line-{index}")).collect(),
+            }],
+            doctor_issues: vec![DiagnosisDoctorIssue {
+                level: DoctorLevel::Warning,
+                project: Some("demo".to_string()),
+                message: "Loopback alias missing.".to_string(),
+                fix_label: Some(DoctorFixAction::ApplySystemSetup.label().to_string()),
+            }],
+            ..DiagnosisEvidenceSnapshot::default()
+        };
 
         snapshot.enforce_caps();
 

@@ -2,7 +2,7 @@ use super::*;
 use crate::loopbox::{GlobalConfig, ProjectConfig, ProxyEndpointProtocol, ServicePortConfig};
 use std::collections::BTreeMap;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -112,7 +112,7 @@ fn wait_for_port_owner(bind_ip: &str, port: u16, timeout: Duration) -> Option<u3
 }
 
 #[cfg(target_os = "macos")]
-fn wait_for_ready_file(path: &PathBuf, timeout: Duration) -> bool {
+fn wait_for_ready_file(path: &Path, timeout: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < timeout {
         if path.exists() {
