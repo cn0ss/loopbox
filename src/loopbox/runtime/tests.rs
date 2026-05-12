@@ -26,6 +26,18 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
     !pid_exists(pid)
 }
 
+#[cfg(unix)]
+fn wait_for_process_group_member(pgid: u32, pid: u32, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if crate::platform::process::process_group_pids(pgid).contains(&pid) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    crate::platform::process::process_group_pids(pgid).contains(&pid)
+}
+
 fn runtime_config_with_port(
     command: &str,
     service_port: Option<u16>,
@@ -1205,7 +1217,8 @@ fn stop_service_terminates_group_members_when_leader_exits_early() {
         shell_quote(script_path.to_string_lossy().as_ref())
     );
     let (config, project, service) = runtime_config_with_port(&command, None);
-    start_service(&config, &project, &service).expect("start service");
+    let started = start_service(&config, &project, &service).expect("start service");
+    let leader_pid = started.pid.expect("started service pid");
 
     let mut child_pid = None;
     for _ in 0..40 {
@@ -1223,6 +1236,10 @@ fn stop_service_terminates_group_members_when_leader_exits_early() {
 
     let child_pid = child_pid.expect("child pid file should be populated");
     assert!(pid_exists(child_pid));
+    assert!(
+        wait_for_process_group_member(leader_pid, child_pid, Duration::from_secs(2)),
+        "detached group member {child_pid} should join service process group {leader_pid}"
+    );
 
     // Give the launching shell time to exit so stop logic must target the group,
     // not only the original leader pid.
