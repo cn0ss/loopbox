@@ -32,8 +32,6 @@ fn take_config() -> Option<LogWindowConfig> {
 
 // ── Standalone log popout component ──
 
-const MAIN_CSS: Asset = asset!("/assets/main.css");
-
 #[allow(non_snake_case)]
 pub(crate) fn LogPopoutWindow() -> Element {
     let initial = take_config().unwrap_or(LogWindowConfig {
@@ -85,8 +83,10 @@ pub(crate) fn LogPopoutWindow() -> Element {
         .and_then(|svc| loopbox::service_log_attached(&pn, svc).ok())
         .unwrap_or(false);
 
+    let main_css_href = super::main_css_href();
+
     rsx! {
-        document::Stylesheet { href: MAIN_CSS }
+        document::Stylesheet { href: main_css_href }
         document::Stylesheet { href: "https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" }
 
         div { class: "log-popout-root",

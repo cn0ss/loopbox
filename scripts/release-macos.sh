@@ -305,6 +305,11 @@ if [[ "$SKIP_BUILD" == "false" ]]; then
     DX_BUILD_ARGS+=(--features "$FEATURES")
   fi
 
+  rm -rf \
+    "$PROJECT_DIR/dist/Loopbox.app" \
+    "$PROJECT_DIR/target/dx/loopbox/release/macos/Loopbox.app" \
+    "$PROJECT_DIR/target/dx/loopbox/bundle/macos/macos/Loopbox.app"
+
   if [[ -n "$CARGO_TARGET_DIR" ]]; then
     (
       cd "$PROJECT_DIR"

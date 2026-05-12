@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.4 - 2026-05-12
+
+### Fixed
+- Fixed stale WebView CSS caching that could leave the new Topology tab without its dedicated styling after an in-app update.
+- Cleaned stale macOS app bundle assets before release builds so old hashed CSS files are not carried into signed update artifacts.
+
 ## v0.3.3 - 2026-05-12
 
 ### Added

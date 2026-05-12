@@ -21,6 +21,10 @@ const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 const PROXY_SIDECAR_REFRESH_TICKS: u64 = 5;
 
+pub(super) fn main_css_href() -> String {
+    format!("{MAIN_CSS}?v={}", loopbox::app_version_label())
+}
+
 // ── App ──
 
 #[component]
@@ -422,10 +426,12 @@ pub(crate) fn App() -> Element {
         String::new()
     };
 
+    let main_css_href = main_css_href();
+
     rsx! {
         document::Title { "Loopbox" }
         document::Link { rel: "icon", href: FAVICON }
-        document::Stylesheet { href: MAIN_CSS }
+        document::Stylesheet { href: main_css_href }
         document::Stylesheet { href: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" }
         tray::MenuBarTrayController {
             config,
