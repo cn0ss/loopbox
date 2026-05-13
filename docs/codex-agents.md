@@ -65,6 +65,9 @@ Each new Codex thread starts with Loopbox-specific developer instructions:
 - Use Loopbox MCP tools for sandbox, runtime, incident, log, request, and resource questions.
 - Inspect `loopbox_incidents` first when diagnosing a failed or unhealthy service, then drill into logs, requests, runtime, and resources.
 - Prefer project hostnames returned by Loopbox over guessed localhost ports.
+- When onboarding or moving a project into Loopbox, keep app commands minimal and put service port/protocol/workdir changes in the Loopbox project config. Do not add `--host`, `--port`, `--strictPort`, fallback Vite port ranges, broad development CORS allowlists, `0.0.0.0`, or sandbox IPs to app config unless the user explicitly asks for that exact app-level change.
+- Configure health probe cadence in Loopbox, not in app commands: use global `health_check_interval_secs`, project `health_check_interval_secs`, or per-port `health_check_interval_secs` as needed.
+- Use Loopbox service hostnames for local app URLs and provider callback/redirect URLs.
 - Fetch logs with explicit limits.
 - Ask before destructive, broad, or mutating changes.
 - Use MCP elicitation for project/runtime mutations.

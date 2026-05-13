@@ -1,0 +1,199 @@
+/* ════════════════════════════════════════════
+   DANGER ZONE
+   ════════════════════════════════════════════ */
+
+.danger-zone {
+    margin-top: 32px;
+    padding-top: 22px;
+    border-top: 1px solid rgba(224, 138, 122, 0.15);
+}
+
+.danger-zone-label {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--danger);
+    margin-bottom: 12px;
+}
+
+.danger-zone-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 18px;
+    background: var(--danger-bg);
+    border: 1px solid rgba(224, 138, 122, 0.18);
+    border-radius: var(--radius-sm);
+}
+
+.danger-zone-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.danger-zone-action-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.danger-zone-action-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+/* ════════════════════════════════════════════
+   SERVICE EDIT (Config Tab + Wizard)
+   ════════════════════════════════════════════ */
+
+.service-section {
+    margin-top: 0;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+
+.service-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.service-section-header h3,
+.service-section-header > span:first-child {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+
+.service-section-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.service-edit-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.service-edit-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+}
+
+.service-edit-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.service-edit-num {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.service-edit-name {
+    font-weight: 500;
+    color: var(--text-bright);
+    font-size: 13px;
+}
+
+.service-edit-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid rgba(224, 138, 122, 0.15);
+    border-radius: var(--radius-sm);
+    color: var(--danger);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.service-edit-remove:hover {
+    background: var(--danger-bg);
+    border-color: rgba(224, 138, 122, 0.3);
+}
+
+.service-edit-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.service-edit-foot {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+/* ════════════════════════════════════════════
+   SERVICE PORT ROWS (Config Tab)
+   ════════════════════════════════════════════ */
+
+.service-port-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 2px;
+}
+
+.service-port-row {
+    display: grid;
+    grid-template-columns: 90px 130px 1fr 150px auto;
+    gap: 6px;
+    align-items: center;
+}
+
+.service-port-row input,
+.service-port-row select {
+    min-width: 0;
+}
+
+/* ════════════════════════════════════════════
+   SERVICE DISCOVERY (Wizard)
+   ════════════════════════════════════════════ */
+
+.service-discovery {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.service-discovery-chips {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.service-discovery-line {
+    font-size: 11px;
+    color: var(--text);
+}
+
+.service-discovery-dim {
+    color: var(--text-dim);
+}

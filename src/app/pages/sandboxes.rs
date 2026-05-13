@@ -61,6 +61,7 @@ pub(in crate::app) fn render_sandboxes_page(
     doctor_issues: Vec<DoctorIssue>,
     suffix_preview: String,
     selected_project: Signal<Option<String>>,
+    requested_detail_tab: Signal<Option<DetailTab>>,
     config: Signal<LoopboxConfig>,
     notice: Signal<Option<Notice>>,
     pending_auto_apply: Signal<Option<String>>,
@@ -71,84 +72,138 @@ pub(in crate::app) fn render_sandboxes_page(
     rsx! {
         // ── Overview: Project Grid ──
         if page == Page::Sandboxes && selected_project_data.is_none() {
-            div { class: "page",
-                div { class: "page-header",
-                    div { class: "page-header-left",
-                        h1 { class: "page-title", "Sandboxes" }
-                        if !doctor_ok {
-                            span { class: "health-badge", "{doctor_issue_count} issues" }
-                        }
-                    }
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| current_page.set(Page::NewSandbox),
-                        "+ New Sandbox"
-                    }
-                }
+            {{
+                let sandbox_count = config_snapshot.projects.len();
+                let service_count: usize = config_snapshot.projects.values().map(|p| p.services.len()).sum();
+                let running_count: usize = overview_running_counts.values().sum();
+                let domain_suffix = config_snapshot.global.domain_suffix.clone();
+                let ip_base = config_snapshot.global.ip_base.clone();
 
-                if config_snapshot.projects.is_empty() {
-                    div { class: "empty-state",
-                        div { class: "empty-state-icon", "\u{25C8}" }
-                        h2 { class: "empty-state-title", "No sandboxes yet" }
-                        p { class: "empty-state-desc",
-                            "Create your first sandbox to assign a dedicated loopback IP and hostnames to a project."
-                        }
-                        button {
-                            class: "btn btn-primary",
-                            onclick: move |_| current_page.set(Page::NewSandbox),
-                            "Create Sandbox"
-                        }
-                    }
-                } else {
-                    div { class: "project-grid",
-                        for (index, (name, project)) in config_snapshot.projects.iter().enumerate() {
-                            {{
-                                let running = overview_running_counts.get(name).copied().unwrap_or(0);
-                                rsx! {
-                                    ProjectCard {
-                                        key: "{name}",
-                                        name: name.clone(),
-                                        ip: project.ip.clone(),
-                                        primary_host: loopbox::project_primary_host(&config_snapshot, name),
-                                        service_count: project.services.len(),
-                                        running_count: running,
-                                        index,
-                                        selected_project,
-                                    }
-                                }
-                            }}
-                        }
-                    }
-
-                    if !doctor_ok {
-                        section { class: "panel doctor-panel",
-                            div { class: "panel-header",
-                                h2 { "Health Checks" }
-                                div { class: "doctor-panel-actions",
-                                    span { class: "panel-badge", "{doctor_issues.len()} checks" }
-                                    button {
-                                        class: "btn btn-sm btn-outline",
-                                        onclick: move |_| {
-                                            runtime_tick.with_mut(|tick| *tick = tick.wrapping_add(1));
-                                            doctor_refresh.with_mut(|tick| *tick = tick.wrapping_add(1));
-                                        },
-                                        "Rerun"
+                rsx! {
+                    div { class: "page sandboxes-overview",
+                        div { class: "page-header",
+                            div { class: "page-header-left",
+                                div { class: "page-header-stack",
+                                    span { class: "page-eyebrow", "Workspace" }
+                                    div {
+                                        style: "display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;",
+                                        h1 { class: "page-title", "sandboxes" }
+                                        if !doctor_ok {
+                                            span { class: "status-badge status-badge--warn",
+                                                "{doctor_issue_count} issues"
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            ul { class: "doctor-list",
-                                for issue in &doctor_issues {
-                                    DoctorIssueRow {
-                                        issue: issue.clone(),
-                                        config,
-                                        notice,
+                            div { class: "page-actions",
+                                button {
+                                    class: "btn btn-primary",
+                                    onclick: move |_| current_page.set(Page::NewSandbox),
+                                    "+ New Sandbox"
+                                }
+                            }
+                        }
+
+                        // Scope eyebrow — domain suffix + ip base
+                        if !config_snapshot.projects.is_empty() {
+                            div { class: "overview-scope",
+                                span { class: "overview-scope-item",
+                                    span { class: "overview-scope-label", "suffix" }
+                                    span { class: "overview-scope-value", ".{domain_suffix}" }
+                                }
+                                span { class: "overview-scope-sep", "·" }
+                                span { class: "overview-scope-item",
+                                    span { class: "overview-scope-label", "ip range" }
+                                    span { class: "overview-scope-value", "{ip_base}" }
+                                }
+                            }
+
+                            // Stats strip — italic-serif numerals signature
+                            div { class: "overview-stats",
+                                div { class: "overview-stat",
+                                    span { class: "overview-stat-value", "{sandbox_count}" }
+                                    span { class: "overview-stat-label", "sandboxes" }
+                                }
+                                div { class: "overview-stat",
+                                    span { class: "overview-stat-value", "{service_count}" }
+                                    span { class: "overview-stat-label", "services" }
+                                }
+                                div { class: "overview-stat overview-stat-accent",
+                                    span { class: "overview-stat-value", "{running_count}" }
+                                    span { class: "overview-stat-label", "running" }
+                                }
+                            }
+                        }
+
+                        if config_snapshot.projects.is_empty() {
+                            div { class: "empty-state",
+                                div { class: "empty-state-icon", "—" }
+                                h2 { class: "empty-state-title", "no sandboxes yet" }
+                                p { class: "empty-state-desc",
+                                    "Create your first sandbox to assign a dedicated loopback IP and hostnames to a project. Loopbox keeps your local DNS, hosts file, and service runtime in sync."
+                                }
+                                button {
+                                    class: "btn btn-primary",
+                                    onclick: move |_| current_page.set(Page::NewSandbox),
+                                    "Create your first sandbox →"
+                                }
+                            }
+                        } else {
+                            div { class: "project-grid",
+                                for (index, (name, project)) in config_snapshot.projects.iter().enumerate() {
+                                    {{
+                                        let running = overview_running_counts.get(name).copied().unwrap_or(0);
+                                        rsx! {
+                                            ProjectCard {
+                                                key: "{name}",
+                                                name: name.clone(),
+                                                ip: project.ip.clone(),
+                                                primary_host: loopbox::project_primary_host(&config_snapshot, name),
+                                                service_count: project.services.len(),
+                                                running_count: running,
+                                                index,
+                                                selected_project,
+                                            }
+                                        }
+                                    }}
+                                }
+                            }
+
+                            if !doctor_ok {
+                                section { class: "panel doctor-panel",
+                                    div { class: "panel-header",
+                                        h2 { "Health Checks" }
+                                        div { class: "doctor-panel-actions",
+                                            span { class: "panel-badge", "{doctor_issues.len()} checks" }
+                                            button {
+                                                class: "btn btn-sm btn-outline",
+                                                onclick: move |_| {
+                                                    runtime_tick.with_mut(|tick| *tick = tick.wrapping_add(1));
+                                                    doctor_refresh.with_mut(|tick| *tick = tick.wrapping_add(1));
+                                                },
+                                                "Rerun"
+                                            }
+                                        }
+                                    }
+                                    ul { class: "doctor-list",
+                                        for issue in &doctor_issues {
+                                            DoctorIssueRow {
+                                                issue: issue.clone(),
+                                                selected_project,
+                                                requested_detail_tab,
+                                                current_page,
+                                                config,
+                                                notice,
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
+            }}
         }
 
         // ── Project Detail ──
@@ -162,6 +217,7 @@ pub(in crate::app) fn render_sandboxes_page(
                     config,
                     notice,
                     selected_project,
+                    requested_detail_tab,
                     pending_auto_apply,
                     runtime_tick,
                     current_page,

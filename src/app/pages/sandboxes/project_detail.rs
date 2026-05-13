@@ -8,12 +8,14 @@ pub(super) fn ProjectDetail(
     mut config: Signal<LoopboxConfig>,
     mut notice: Signal<Option<Notice>>,
     mut selected_project: Signal<Option<String>>,
+    mut requested_detail_tab: Signal<Option<DetailTab>>,
     pending_auto_apply: Signal<Option<String>>,
     mut runtime_tick: Signal<u64>,
     mut current_page: Signal<Page>,
 ) -> Element {
     // ── Local State ──
-    let mut active_tab = use_signal(|| DetailTab::Services);
+    let requested_initial_tab = requested_detail_tab().unwrap_or(DetailTab::Services);
+    let mut active_tab = use_signal(move || requested_initial_tab);
     let initial_log_filter = project.services.first().map(|service| service.name.clone());
     let mut log_filter = use_signal(move || initial_log_filter.clone());
     let mut env_editing_path = use_signal(|| None::<String>);
@@ -29,6 +31,13 @@ pub(super) fn ProjectDetail(
     let mut edit_form = use_signal(move || ProjectEditForm::from_project(&initial_project));
     let mut proxy_endpoints_form = use_signal(|| project.proxy_endpoints.clone());
     let mut grpc_proto_paths_form = use_signal(|| project.grpc_proto_paths.join("\n"));
+
+    use_effect(move || {
+        if let Some(tab) = requested_detail_tab() {
+            active_tab.set(tab);
+            requested_detail_tab.set(None);
+        }
+    });
 
     // ── Derived: Runtime Status (reactive via tick) ──
     let pn_status = project_name.clone();
@@ -342,7 +351,7 @@ pub(super) fn ProjectDetail(
                     onclick: move |_| selected_project.set(None),
                     "Sandboxes"
                 }
-                span { class: "breadcrumb-sep", "/" }
+                span { class: "breadcrumb-sep", "›" }
                 span { class: "breadcrumb-current", "{project_name}" }
             }
 
@@ -361,6 +370,7 @@ pub(super) fn ProjectDetail(
                     }
                 }
                 div { class: "detail-header-actions detail-agent-actions",
+                    // Primary action — always visible
                     button {
                         class: "btn btn-sm btn-primary",
                         onclick: {
@@ -388,70 +398,80 @@ pub(super) fn ProjectDetail(
                         },
                         "Start Diagnosis"
                     }
-                    button {
-                        class: "btn btn-sm btn-outline",
-                        onclick: {
-                            let prompt_project = project_name.clone();
-                            move |_| {
-                                loopbox::codex_agents_prefill_prompt(format!(
-                                    "Summarize sandbox `{prompt_project}` and its current runtime health. Inspect incidents first, then runtime, logs, requests, and resources."
-                                ));
-                                current_page.set(Page::Agents);
-                            }
-                        },
-                        "Ask Agent"
-                    }
-                    button {
-                        class: "btn btn-sm btn-outline",
-                        onclick: {
-                            let prompt_project = project_name.clone();
-                            move |_| {
-                                loopbox::codex_agents_prefill_prompt(format!(
-                                    "Explain recent failing logs for sandbox `{prompt_project}`. Use Loopbox log tools with a small limit first."
-                                ));
-                                current_page.set(Page::Agents);
-                            }
-                        },
-                        "Explain Logs"
-                    }
-                    button {
-                        class: "btn btn-sm btn-outline",
-                        onclick: {
-                            let prompt_project = project_name.clone();
-                            move |_| {
-                                loopbox::codex_agents_prefill_prompt(format!(
-                                    "Diagnose recent traffic for sandbox `{prompt_project}` and identify suspicious failures."
-                                ));
-                                current_page.set(Page::Agents);
-                            }
-                        },
-                        "Diagnose Traffic"
-                    }
-                    button {
-                        class: "btn btn-sm btn-outline",
-                        onclick: {
-                            let prompt_project = project_name.clone();
-                            move |_| {
-                                loopbox::codex_agents_prefill_prompt(format!(
-                                    "Diagnose recent warning and critical incidents for sandbox `{prompt_project}`. Start with `loopbox_incidents` for the 1h window, then inspect logs, requests, runtime, and resources as evidence."
-                                ));
-                                current_page.set(Page::Agents);
-                            }
-                        },
-                        "Diagnose Incidents"
-                    }
-                    button {
-                        class: "btn btn-sm btn-outline",
-                        onclick: {
-                            let prompt_project = project_name.clone();
-                            move |_| {
-                                loopbox::codex_agents_prefill_prompt(format!(
-                                    "Help create a similar Loopbox sandbox to `{prompt_project}`. Read its config first and ask before creating anything."
-                                ));
-                                current_page.set(Page::Agents);
-                            }
-                        },
-                        "Create Similar"
+
+                    // Secondary agent prompts — grouped as compact chips under a kicker
+                    div { class: "detail-agent-prompts",
+                        span { class: "detail-agent-prompts-kicker", "ask agent" }
+                        button {
+                            class: "agent-prompt-chip",
+                            title: "Summarize sandbox health",
+                            onclick: {
+                                let prompt_project = project_name.clone();
+                                move |_| {
+                                    loopbox::codex_agents_prefill_prompt(format!(
+                                        "Summarize sandbox `{prompt_project}` and its current runtime health. Inspect incidents first, then runtime, logs, requests, and resources."
+                                    ));
+                                    current_page.set(Page::Agents);
+                                }
+                            },
+                            "summary"
+                        }
+                        button {
+                            class: "agent-prompt-chip",
+                            title: "Explain recent failing logs",
+                            onclick: {
+                                let prompt_project = project_name.clone();
+                                move |_| {
+                                    loopbox::codex_agents_prefill_prompt(format!(
+                                        "Explain recent failing logs for sandbox `{prompt_project}`. Use Loopbox log tools with a small limit first."
+                                    ));
+                                    current_page.set(Page::Agents);
+                                }
+                            },
+                            "logs"
+                        }
+                        button {
+                            class: "agent-prompt-chip",
+                            title: "Diagnose recent traffic failures",
+                            onclick: {
+                                let prompt_project = project_name.clone();
+                                move |_| {
+                                    loopbox::codex_agents_prefill_prompt(format!(
+                                        "Diagnose recent traffic for sandbox `{prompt_project}` and identify suspicious failures."
+                                    ));
+                                    current_page.set(Page::Agents);
+                                }
+                            },
+                            "traffic"
+                        }
+                        button {
+                            class: "agent-prompt-chip",
+                            title: "Diagnose recent incidents",
+                            onclick: {
+                                let prompt_project = project_name.clone();
+                                move |_| {
+                                    loopbox::codex_agents_prefill_prompt(format!(
+                                        "Diagnose recent warning and critical incidents for sandbox `{prompt_project}`. Start with `loopbox_incidents` for the 1h window, then inspect logs, requests, runtime, and resources as evidence."
+                                    ));
+                                    current_page.set(Page::Agents);
+                                }
+                            },
+                            "incidents"
+                        }
+                        button {
+                            class: "agent-prompt-chip",
+                            title: "Help create a similar sandbox",
+                            onclick: {
+                                let prompt_project = project_name.clone();
+                                move |_| {
+                                    loopbox::codex_agents_prefill_prompt(format!(
+                                        "Help create a similar Loopbox sandbox to `{prompt_project}`. Read its config first and ask before creating anything."
+                                    ));
+                                    current_page.set(Page::Agents);
+                                }
+                            },
+                            "clone"
+                        }
                     }
                 }
             }
@@ -1592,6 +1612,14 @@ pub(super) fn ProjectDetail(
                                     oninput: move |evt| edit_form.write().ip = evt.value(),
                                 }
                             }
+                            label { class: "field",
+                                span { "Health Interval" }
+                                input {
+                                    value: "{edit_snapshot.health_check_interval_secs}",
+                                    placeholder: "Default seconds",
+                                    oninput: move |evt| edit_form.write().health_check_interval_secs = evt.value(),
+                                }
+                            }
                             div { class: "field field-wide field-generated",
                                 span { "Generated Hosts" }
                                 div { class: "field-generated-lines",
@@ -1746,6 +1774,23 @@ pub(super) fn ProjectDetail(
                                                                             }
                                                                             if let Some(port) = service.ports.get_mut(port_idx) {
                                                                                 port.health_path = evt.value();
+                                                                            }
+                                                                            sync_service_entry_primary_port(service);
+                                                                        }
+                                                                    });
+                                                                },
+                                                            }
+                                                            input {
+                                                                value: "{port_entry.health_check_interval_secs}",
+                                                                placeholder: "Health interval seconds",
+                                                                oninput: move |evt: Event<FormData>| {
+                                                                    edit_form.with_mut(|form| {
+                                                                        if let Some(service) = form.services.get_mut(i) {
+                                                                            if service.ports.is_empty() {
+                                                                                service.ports = service_entry_port_rows(service);
+                                                                            }
+                                                                            if let Some(port) = service.ports.get_mut(port_idx) {
+                                                                                port.health_check_interval_secs = evt.value();
                                                                             }
                                                                             sync_service_entry_primary_port(service);
                                                                         }
@@ -2232,6 +2277,7 @@ pub(super) fn ProjectDetail(
                                         let update_input = UpdateProjectInput {
                                             dir: form.dir,
                                             ip: form.ip,
+                                            health_check_interval_secs: form.health_check_interval_secs,
                                             services: form.services,
                                         };
                                         let previous = config();
@@ -2547,11 +2593,13 @@ mod tests {
                     port: "50051".to_string(),
                     protocol: "grpc_h2c".to_string(),
                     health_path: String::new(),
+                    health_check_interval_secs: String::new(),
                 },
                 ServicePortEntry {
                     port: "8080".to_string(),
                     protocol: "http1".to_string(),
                     health_path: "/health".to_string(),
+                    health_check_interval_secs: String::new(),
                 },
             ],
             port: String::new(),
@@ -2585,21 +2633,25 @@ mod tests {
                     port: "8080".to_string(),
                     protocol: "http1".to_string(),
                     health_path: String::new(),
+                    health_check_interval_secs: String::new(),
                 },
                 ServicePortEntry {
                     port: "abc".to_string(),
                     protocol: "http1".to_string(),
                     health_path: String::new(),
+                    health_check_interval_secs: String::new(),
                 },
                 ServicePortEntry {
                     port: "8080".to_string(),
                     protocol: "http1".to_string(),
                     health_path: String::new(),
+                    health_check_interval_secs: String::new(),
                 },
                 ServicePortEntry {
                     port: "50051".to_string(),
                     protocol: "grpc_h2c".to_string(),
                     health_path: String::new(),
+                    health_check_interval_secs: String::new(),
                 },
             ],
             port: String::new(),

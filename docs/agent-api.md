@@ -25,6 +25,12 @@ AUTH="Authorization: Bearer ${TOKEN}"
 - `GET /v1/health` (no auth)
 - `GET /v1/meta`
 - `GET /v1/doctor`
+- `GET /v1/clusters`
+- `GET /v1/clusters/discover`
+- `POST /v1/clusters/import`
+- `GET /v1/clusters/{cluster}`
+- `POST /v1/clusters/{cluster}/wireguard/start`
+- `POST /v1/clusters/{cluster}/wireguard/stop`
 - `GET /v1/projects`
 - `POST /v1/projects?apply_system_setup={true|false}`
 - `GET /v1/projects/{project}`
@@ -78,6 +84,34 @@ max_storage_mb = 250
 
 The interval is clamped to 2-60 seconds, retention to 1-90 days, and storage to 25-5,000 MB. When Docker or platform process stats are unavailable, samples remain best-effort and include `unavailable_reason` instead of failing the API response.
 
+## Kubernetes clusters
+
+`GET /v1/clusters/discover` detects kubeconfig contexts from `KUBECONFIG`
+and `~/.kube/config`. `POST /v1/clusters/import` persists selected discovered
+contexts into `global.kubernetes.clusters`.
+
+`GET /v1/clusters` returns configured Kubernetes clusters from `global.kubernetes.clusters`.
+Each snapshot includes provider, context, default namespace, WireGuard
+connectivity state, namespaces, selected-namespace workloads, services, pods,
+nodes, ingresses, EndpointSlices, recent events, topology edges/nodes, partial
+warnings, and a best-effort `last_error` when `kubectl` or WireGuard inspection
+fails.
+
+`GET /v1/clusters/{cluster}` returns one cluster snapshot. Use
+`?namespace=<name>` to inspect a namespace other than the configured default.
+Metrics are intentionally not included yet; future metrics support should remain
+best-effort because `kubectl top` depends on Metrics Server.
+
+WireGuard control endpoints are available when the cluster has a WireGuard
+configuration:
+
+- `POST /v1/clusters/{cluster}/wireguard/start`
+- `POST /v1/clusters/{cluster}/wireguard/stop`
+
+This version manages existing kubeconfig contexts. Local cluster creation with
+tools such as `kind`, `k3d`, or `k3s` is intentionally left to a later provider
+extension.
+
 ## Curl examples
 
 ```sh
@@ -104,13 +138,14 @@ curl -s -X POST \
     "name": "demo",
     "dir": "/path/to/demo",
     "ip": "127.0.0.30",
+    "health_check_interval_secs": 10,
     "services": [
       {
         "name": "web",
         "runtime": "process",
         "command": "npm run dev",
         "workdir": "/path/to/demo",
-        "ports": [{ "port": 5173, "protocol": "http1" }]
+        "ports": [{ "port": 5173, "protocol": "http1", "health_check_interval_secs": 30 }]
       }
     ]
   }
@@ -160,4 +195,23 @@ curl -s -H "${AUTH}" \
 curl -s -H "${AUTH}" \
   "${BASE}/v1/projects/demo/incidents?service=web&window=1h&limit=50" \
   | jq '.events[] | {severity, kind, summary, evidence_count: (.evidence | length)}'
+
+# Inspect Kubernetes clusters
+curl -s -H "${AUTH}" "${BASE}/v1/clusters" \
+  | jq '.clusters[] | {name, provider, context, connectivity, workloads: (.workloads | length)}'
+
+# Discover kubeconfig contexts
+curl -s -H "${AUTH}" "${BASE}/v1/clusters/discover" \
+  | jq '.clusters[] | {name, context, kubeconfig_path, already_configured, reachable}'
+
+# Import one discovered context
+curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -H "${AUTH}" \
+  "${BASE}/v1/clusters/import" \
+  -d '{"clusters":[{"provider":"kubeconfig_context","context":"kind-loopbox","default_namespace":"default"}]}' | jq
+
+# Start a configured WireGuard tunnel for a cluster
+curl -s -X POST -H "${AUTH}" \
+  "${BASE}/v1/clusters/prod/wireguard/start" | jq
 ```

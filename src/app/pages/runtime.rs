@@ -19,7 +19,7 @@ pub(in crate::app) fn render_runtime_page(
     page: Page,
     mut current_page: Signal<Page>,
     runtime_filter_value: RuntimeFilter,
-    mut runtime_filter: Signal<RuntimeFilter>,
+    runtime_filter: Signal<RuntimeFilter>,
     mut runtime_search: Signal<String>,
     config: Signal<LoopboxConfig>,
     mut notice: Signal<Option<Notice>>,
@@ -108,42 +108,35 @@ pub(in crate::app) fn render_runtime_page(
     } else {
         "collection disabled".to_string()
     };
-    let health_badge_class = if !runtime_loading && attention_total > 0 {
-        "runtime-health-badge runtime-health-badge-warn"
-    } else {
-        "runtime-health-badge"
-    };
-    let health_icon = if runtime_loading {
-        RuntimeIconKind::Pulse
+    let health_badge_class = if runtime_loading {
+        "status-badge status-badge--neutral"
     } else if attention_total > 0 {
-        RuntimeIconKind::Alert
+        "status-badge status-badge--warn"
+    } else if active_total > 0 {
+        "status-badge status-badge--ok"
     } else {
-        RuntimeIconKind::Running
+        "status-badge status-badge--neutral"
     };
 
     rsx! {
         div { class: "page runtime-page",
-            div { class: "runtime-hero",
-                div { class: "runtime-hero-copy",
-                    span { class: "runtime-eyebrow",
-                        RuntimeIcon { kind: RuntimeIconKind::Pulse }
-                        "Live runtime"
-                    }
-                    h1 { class: "runtime-hero-title", "Runtime" }
-                    div { class: "runtime-hero-status",
-                        span { class: "runtime-visibility-badge",
-                            RuntimeIcon { kind: RuntimeIconKind::Filter }
-                            "{visibility_label}"
+            div { class: "page-header",
+                div { class: "page-header-left",
+                    div { class: "page-header-stack",
+                        span { class: "page-eyebrow", "Live runtime" }
+                        h1 { class: "page-title", "runtime" }
+                        div { class: "page-meta",
+                            span { class: "page-meta-item",
+                                strong { "{visibility_label}" }
+                            }
+                            span { class: "page-meta-sep", "·" }
+                            span { class: "{health_badge_class}", "{health_label}" }
                         }
-                        span { class: "{health_badge_class}",
-                            RuntimeIcon { kind: health_icon }
-                            "{health_label}"
-                        }
+                        p { class: "page-subtitle", "{health_detail}" }
                     }
-                    p { class: "runtime-hero-subtitle", "{health_detail}" }
                 }
 
-                div { class: "runtime-hero-tools",
+                div { class: "page-actions",
                     div { class: "runtime-search-shell",
                         RuntimeIcon { kind: RuntimeIconKind::Search }
                         input {
@@ -225,94 +218,98 @@ pub(in crate::app) fn render_runtime_page(
             }
 
             if total_rows > 0 {
-                div { class: "runtime-dashboard-grid",
-                    RuntimeStatTile {
-                        kind: RuntimeIconKind::Cpu,
-                        label: "CPU".to_string(),
-                        value: resource_total_cpu_label.clone(),
-                        detail: sample_detail.clone(),
+                // ── Compact metrics strip (replaces dashboard grid + status dock) ──
+                div { class: "runtime-metrics-strip",
+                    div { class: "runtime-metric",
+                        span { class: "runtime-metric-label", "cpu" }
+                        strong { class: "runtime-metric-value", "{resource_total_cpu_label}" }
                     }
-                    RuntimeStatTile {
-                        kind: RuntimeIconKind::Memory,
-                        label: "Memory".to_string(),
-                        value: resource_total_memory_label.clone(),
-                        detail: sample_detail.clone(),
+                    div { class: "runtime-metric",
+                        span { class: "runtime-metric-label", "mem" }
+                        strong { class: "runtime-metric-value", "{resource_total_memory_label}" }
                     }
-                    RuntimeStatTile {
-                        kind: RuntimeIconKind::Hotspot,
-                        label: "Hottest".to_string(),
-                        value: hottest_service.clone(),
-                        detail: "highest CPU".to_string(),
+                    div { class: "runtime-metric",
+                        span { class: "runtime-metric-label", "hottest" }
+                        strong { class: "runtime-metric-value runtime-metric-value-text", "{hottest_service}" }
                     }
-                    RuntimeStatTile {
-                        kind: RuntimeIconKind::Resource,
-                        label: "Largest".to_string(),
-                        value: largest_service.clone(),
-                        detail: "highest memory".to_string(),
+                    div { class: "runtime-metric",
+                        span { class: "runtime-metric-label", "largest" }
+                        strong { class: "runtime-metric-value runtime-metric-value-text", "{largest_service}" }
                     }
-                    RuntimeStatTile {
-                        kind: RuntimeIconKind::Sample,
-                        label: "Last sample".to_string(),
-                        value: latest_sample_label.clone(),
-                        detail: "freshness".to_string(),
+                    div { class: "runtime-metric",
+                        span { class: "runtime-metric-label", "last sample" }
+                        strong { class: "runtime-metric-value", "{latest_sample_label}" }
+                    }
+                    div { class: "runtime-metric-spacer" }
+                    div { class: "runtime-metric runtime-metric-detail",
+                        span { class: "runtime-metric-label", "samples" }
+                        span { class: "runtime-metric-value-sub", "{sample_detail}" }
                     }
                 }
 
-                div { class: "runtime-status-dock",
-                    RuntimeStatusPill {
-                        kind: RuntimeIconKind::Running,
-                        label: "Running".to_string(),
-                        count: running_total,
-                        tone: "success".to_string(),
+                // ── Unified filter row — status counts ARE the filter ──
+                div { class: "runtime-filter-row",
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::All,
+                        label: "all",
+                        count: Some(total_rows),
+                        tone: "neutral",
+                        active: runtime_filter_value == RuntimeFilter::All,
+                        runtime_filter,
                     }
-                    RuntimeStatusPill {
-                        kind: RuntimeIconKind::Starting,
-                        label: "Starting".to_string(),
-                        count: starting_total,
-                        tone: "warn".to_string(),
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::Running,
+                        label: "running",
+                        count: Some(running_total),
+                        tone: "ok",
+                        active: runtime_filter_value == RuntimeFilter::Running,
+                        runtime_filter,
                     }
-                    RuntimeStatusPill {
-                        kind: RuntimeIconKind::Alert,
-                        label: "Unhealthy".to_string(),
-                        count: unhealthy_total,
-                        tone: "danger".to_string(),
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::Unhealthy,
+                        label: "unhealthy",
+                        count: Some(unhealthy_total),
+                        tone: "warn",
+                        active: runtime_filter_value == RuntimeFilter::Unhealthy,
+                        runtime_filter,
                     }
-                    RuntimeStatusPill {
-                        kind: RuntimeIconKind::Alert,
-                        label: "Crashed".to_string(),
-                        count: crashed_total,
-                        tone: "danger".to_string(),
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::Crashed,
+                        label: "crashed",
+                        count: Some(crashed_total),
+                        tone: "error",
+                        active: runtime_filter_value == RuntimeFilter::Crashed,
+                        runtime_filter,
                     }
-                    RuntimeStatusPill {
-                        kind: RuntimeIconKind::Stopped,
-                        label: "Stopped".to_string(),
-                        count: stopped_total,
-                        tone: "muted".to_string(),
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::Stopped,
+                        label: "stopped",
+                        count: Some(stopped_total),
+                        tone: "muted",
+                        active: runtime_filter_value == RuntimeFilter::Stopped,
+                        runtime_filter,
                     }
-                }
-
-                div { class: "runtime-filter-shell",
-                    div { class: "runtime-filter-heading",
-                        RuntimeIcon { kind: RuntimeIconKind::Filter }
-                        span { "Filter" }
-                    }
-                    div { class: "filter-bar runtime-filter-bar",
-                        for filter in [
-                            RuntimeFilter::All,
-                            RuntimeFilter::Running,
-                            RuntimeFilter::Stopped,
-                            RuntimeFilter::Unhealthy,
-                            RuntimeFilter::Crashed,
-                            RuntimeFilter::Containers,
-                            RuntimeFilter::Processes,
-                        ] {
-                            button {
-                                key: "{runtime_filter_label(filter)}",
-                                class: if runtime_filter_value == filter { "filter-btn active" } else { "filter-btn" },
-                                onclick: move |_| runtime_filter.set(filter),
-                                "{runtime_filter_label(filter)}"
-                            }
+                    if starting_total > 0 {
+                        span { class: "runtime-filter-aside",
+                            "+ {starting_total} starting"
                         }
+                    }
+                    div { class: "runtime-filter-row-spacer" }
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::Containers,
+                        label: "containers",
+                        count: None,
+                        tone: "muted",
+                        active: runtime_filter_value == RuntimeFilter::Containers,
+                        runtime_filter,
+                    }
+                    RuntimeFilterChip {
+                        filter: RuntimeFilter::Processes,
+                        label: "processes",
+                        count: None,
+                        tone: "muted",
+                        active: runtime_filter_value == RuntimeFilter::Processes,
+                        runtime_filter,
                     }
                 }
             }
@@ -494,19 +491,26 @@ pub(in crate::app) fn render_runtime_page(
             }
 
             if runtime_loading && total_rows == 0 {
-                div { class: "empty-state runtime-empty-state",
-                    RuntimeIcon { kind: RuntimeIconKind::Pulse }
-                    p { class: "empty-state-text", "Loading runtime status..." }
+                div { class: "empty-state",
+                    span { class: "empty-state-icon", "∿" }
+                    h2 { class: "empty-state-title", "loading runtime" }
+                    p { class: "empty-state-desc", "Sampling process and container state…" }
                 }
             } else if project_count == 0 {
-                div { class: "empty-state runtime-empty-state",
-                    RuntimeIcon { kind: RuntimeIconKind::Project }
-                    p { class: "empty-state-text", "No sandboxes configured yet." }
+                div { class: "empty-state",
+                    span { class: "empty-state-icon", "◊" }
+                    h2 { class: "empty-state-title", "no sandboxes yet" }
+                    p { class: "empty-state-desc",
+                        "Create a sandbox to start watching its services here. Runtime metrics appear as soon as a service runs."
+                    }
                 }
             } else if total_rows > 0 && visible_rows == 0 {
-                div { class: "empty-state runtime-empty-state",
-                    RuntimeIcon { kind: RuntimeIconKind::Search }
-                    p { class: "empty-state-text", "No services match the current Runtime filters." }
+                div { class: "empty-state",
+                    span { class: "empty-state-icon", "⊘" }
+                    h2 { class: "empty-state-title", "no matches" }
+                    p { class: "empty-state-desc",
+                        "No services match the current search and filter. Clear filters to see everything again."
+                    }
                 }
             }
         }
@@ -817,6 +821,7 @@ fn runtime_page_uses_live_refresh(page: Page) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum RuntimeIconKind {
     Alert,
     Attach,
@@ -963,6 +968,35 @@ fn RuntimeStatTile(kind: RuntimeIconKind, label: String, value: String, detail: 
             }
             strong { "{value}" }
             span { class: "runtime-stat-detail", "{detail}" }
+        }
+    }
+}
+
+#[component]
+fn RuntimeFilterChip(
+    filter: RuntimeFilter,
+    label: &'static str,
+    count: Option<usize>,
+    tone: &'static str,
+    active: bool,
+    runtime_filter: Signal<RuntimeFilter>,
+) -> Element {
+    let mut runtime_filter = runtime_filter;
+    let mut class = String::from("runtime-chip");
+    class.push_str(" runtime-chip--");
+    class.push_str(tone);
+    if active {
+        class.push_str(" is-active");
+    }
+
+    rsx! {
+        button {
+            class: "{class}",
+            onclick: move |_| runtime_filter.set(filter),
+            span { class: "runtime-chip-label", "{label}" }
+            if let Some(value) = count {
+                span { class: "runtime-chip-count", "{value}" }
+            }
         }
     }
 }
@@ -1289,18 +1323,6 @@ fn RuntimeServiceActions(
     }
 }
 
-fn runtime_filter_label(filter: RuntimeFilter) -> &'static str {
-    match filter {
-        RuntimeFilter::All => "All",
-        RuntimeFilter::Running => "Running",
-        RuntimeFilter::Stopped => "Stopped",
-        RuntimeFilter::Unhealthy => "Unhealthy",
-        RuntimeFilter::Crashed => "Crashed",
-        RuntimeFilter::Containers => "Containers",
-        RuntimeFilter::Processes => "Processes",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1319,6 +1341,7 @@ mod tests {
                 port: 5173,
                 protocol: ProxyEndpointProtocol::Http1,
                 health_path: None,
+                health_check_interval_secs: None,
             }],
             port: Some(5173),
             protocol: ProxyEndpointProtocol::Http1,
@@ -1346,6 +1369,7 @@ mod tests {
                 port: 5432,
                 protocol: ProxyEndpointProtocol::TcpPassthrough,
                 health_path: None,
+                health_check_interval_secs: None,
             }],
             port: Some(5432),
             protocol: ProxyEndpointProtocol::TcpPassthrough,

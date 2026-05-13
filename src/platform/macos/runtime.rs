@@ -7,7 +7,7 @@
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+use rustix::fs::{self as rustix_fs, Mode, OFlags};
+use rustix::io::Errno;
+use rustix::process::{self as rustix_process, Pid, Signal, WaitOptions, WaitStatus};
+use rustix::termios::{self as rustix_termios, OptionalActions, Termios, Winsize};
+
+pub type RuntimeFd = OwnedFd;
+pub type RuntimePid = libc::pid_t;
 
 // ---------------------------------------------------------------------------
 // Process group
@@ -43,7 +51,7 @@ pub fn spawn_pty_child(
     workdir: &str,
     cols: u16,
     rows: u16,
-) -> Result<(libc::c_int, libc::pid_t), String> {
+) -> Result<(RuntimeFd, RuntimePid), String> {
     let shell = CString::new("/bin/bash").expect("static path without NUL");
     let arg_lc = CString::new("-lc").expect("static arg without NUL");
     let command_arg = CString::new(command_str)
@@ -90,23 +98,20 @@ pub fn spawn_pty_child(
         }
     }
 
+    // SAFETY: `forkpty` initialized `master_fd` with an owned descriptor in
+    // the parent process when it returned a positive child pid.
+    let master_fd = unsafe { OwnedFd::from_raw_fd(master_fd) };
     Ok((master_fd, child_pid))
 }
 
-pub fn close_fd(fd: libc::c_int) {
-    unsafe {
-        libc::close(fd);
-    }
-}
-
 pub fn resize_pty(
-    fd: libc::c_int,
+    fd: &RuntimeFd,
     cols: u16,
     rows: u16,
     cell_width_px: u32,
     cell_height_px: u32,
 ) -> Result<(), String> {
-    let mut winsize = libc::winsize {
+    let winsize = Winsize {
         ws_row: rows,
         ws_col: cols,
         ws_xpixel: cell_width_px
@@ -116,13 +121,12 @@ pub fn resize_pty(
             .saturating_mul(u32::from(rows))
             .min(u32::from(u16::MAX)) as u16,
     };
-    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &mut winsize) } != 0 {
-        return Err(format!(
+    rustix_termios::tcsetwinsize(fd, winsize).map_err(|err| {
+        format!(
             "Failed to resize runtime PTY to {cols}x{rows}: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })
 }
 
 /// Fork a PTY child that runs `command` (via `/bin/bash -lc`) inside `workdir`,
@@ -150,18 +154,18 @@ pub fn run_pty_child(
         })?;
 
     let (master_fd, child_pid) = spawn_pty_child(command_str, workdir, 80, 24)?;
-    let writer_fd = unsafe { libc::dup(master_fd) };
-    if writer_fd < 0 {
-        unsafe {
-            libc::close(master_fd);
-            libc::kill(child_pid, libc::SIGTERM);
+    let writer_fd = match rustix::io::dup(&master_fd) {
+        Ok(fd) => fd,
+        Err(err) => {
+            drop(master_fd);
+            terminate_process(child_pid, Signal::TERM);
+            let _ = wait_for_child_exit(child_pid);
+            return Err(format!(
+                "Failed to duplicate runtime PTY descriptor: {}",
+                std::io::Error::from_raw_os_error(err.raw_os_error())
+            ));
         }
-        let _ = wait_for_child_exit(child_pid);
-        return Err(format!(
-            "Failed to duplicate runtime PTY descriptor: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    };
 
     let stop = Arc::new(AtomicBool::new(false));
     let input_stop = Arc::clone(&stop);
@@ -192,31 +196,93 @@ pub fn run_pty_child(
 // wait_for_child_exit
 // ---------------------------------------------------------------------------
 
-pub fn wait_for_child_exit(pid: libc::pid_t) -> Result<i32, String> {
-    let mut status = 0_i32;
+pub fn wait_for_child_exit(pid: RuntimePid) -> Result<i32, String> {
+    let pid = runtime_pid(pid)?;
     loop {
-        let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
-        if waited == pid {
-            let exited = libc::WIFEXITED(status);
-            if exited {
-                return Ok(libc::WEXITSTATUS(status) as i32);
+        match rustix_process::waitpid(Some(pid), WaitOptions::empty()) {
+            Ok(Some((_pid, status))) => return Ok(wait_status_exit_code(status)),
+            Ok(None) => continue,
+            Err(Errno::INTR) => continue,
+            Err(err) => {
+                let io_err = std::io::Error::from_raw_os_error(err.raw_os_error());
+                return Err(format!(
+                    "Failed while waiting for runtime PTY child {}: {io_err}",
+                    pid.as_raw_pid()
+                ));
             }
-            let signaled = libc::WIFSIGNALED(status);
-            if signaled {
-                return Ok(128 + libc::WTERMSIG(status) as i32);
-            }
-            return Ok(1);
-        }
-        if waited < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return Err(format!(
-                "Failed while waiting for runtime PTY child {pid}: {err}"
-            ));
         }
     }
+}
+
+pub fn try_wait_child_exit(pid: RuntimePid) -> Result<Option<i32>, String> {
+    let pid = runtime_pid(pid)?;
+    match rustix_process::waitpid(Some(pid), WaitOptions::NOHANG) {
+        Ok(Some((_pid, status))) => Ok(Some(wait_status_exit_code(status))),
+        Ok(None) => Ok(None),
+        Err(Errno::CHILD) => Ok(Some(0)),
+        Err(err) => {
+            let io_err = std::io::Error::from_raw_os_error(err.raw_os_error());
+            Err(format!(
+                "Failed while waiting for runtime terminal child {}: {io_err}",
+                pid.as_raw_pid()
+            ))
+        }
+    }
+}
+
+pub fn terminate_process(pid: RuntimePid, signal: Signal) {
+    if let Ok(pid) = runtime_pid(pid) {
+        let _ = rustix_process::kill_process(pid, signal);
+    }
+}
+
+pub fn set_fd_nonblocking(fd: &RuntimeFd) -> Result<(), String> {
+    let flags = rustix_fs::fcntl_getfl(fd).map_err(|err| {
+        format!(
+            "Failed to read terminal fd flags: {}",
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })?;
+    rustix_fs::fcntl_setfl(fd, flags | OFlags::NONBLOCK).map_err(|err| {
+        format!(
+            "Failed to set terminal fd nonblocking: {}",
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })
+}
+
+pub enum ReadFdError {
+    WouldBlock,
+    Closed,
+    Other(String),
+}
+
+pub fn read_fd(fd: &RuntimeFd, buffer: &mut [u8]) -> Result<usize, ReadFdError> {
+    match rustix::io::read(fd, buffer) {
+        Ok(read_count) => Ok(read_count),
+        Err(Errno::INTR) | Err(Errno::AGAIN) => Err(ReadFdError::WouldBlock),
+        Err(Errno::IO) | Err(Errno::BADF) => Err(ReadFdError::Closed),
+        Err(err) => {
+            let io_err = std::io::Error::from_raw_os_error(err.raw_os_error());
+            Err(ReadFdError::Other(format!(
+                "Failed to read runtime terminal PTY: {io_err}"
+            )))
+        }
+    }
+}
+
+fn runtime_pid(pid: RuntimePid) -> Result<Pid, String> {
+    Pid::from_raw(pid).ok_or_else(|| format!("Invalid runtime child pid {pid}."))
+}
+
+fn wait_status_exit_code(status: WaitStatus) -> i32 {
+    if let Some(code) = status.exit_status() {
+        return code;
+    }
+    if let Some(signal) = status.terminating_signal() {
+        return 128 + signal;
+    }
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -224,45 +290,37 @@ pub fn wait_for_child_exit(pid: libc::pid_t) -> Result<i32, String> {
 // ---------------------------------------------------------------------------
 
 pub struct RawStdinGuard {
-    fd: libc::c_int,
-    original: libc::termios,
+    original: Termios,
 }
 
 impl Drop for RawStdinGuard {
     fn drop(&mut self) {
-        unsafe {
-            libc::tcsetattr(self.fd, libc::TCSANOW, &self.original);
-        }
+        let _ =
+            rustix_termios::tcsetattr(rustix::stdio::stdin(), OptionalActions::Now, &self.original);
     }
 }
 
 pub fn set_stdin_raw_mode() -> Result<RawStdinGuard, String> {
-    let stdin_fd = std::io::stdin().as_raw_fd();
-    if unsafe { libc::isatty(stdin_fd) } != 1 {
+    let stdin_fd = rustix::stdio::stdin();
+    if !rustix_termios::isatty(stdin_fd) {
         return Err("Attach mode requires an interactive terminal (TTY stdin).".to_string());
     }
 
-    let mut term = unsafe { std::mem::zeroed::<libc::termios>() };
-    if unsafe { libc::tcgetattr(stdin_fd, &mut term) } != 0 {
-        return Err(format!(
+    let term = rustix_termios::tcgetattr(stdin_fd).map_err(|err| {
+        format!(
             "Failed to read terminal mode for attach: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let mut raw = term;
-    unsafe {
-        libc::cfmakeraw(&mut raw);
-    }
-    if unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &raw) } != 0 {
-        return Err(format!(
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })?;
+    let mut raw = term.clone();
+    raw.make_raw();
+    rustix_termios::tcsetattr(stdin_fd, OptionalActions::Now, &raw).map_err(|err| {
+        format!(
             "Failed to set terminal raw mode for attach: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(RawStdinGuard {
-        fd: stdin_fd,
-        original: term,
-    })
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })?;
+    Ok(RawStdinGuard { original: term })
 }
 
 // ---------------------------------------------------------------------------
@@ -273,48 +331,44 @@ pub fn forward_terminal_input_to_fifo(
     input_path: &Path,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let c_path = CString::new(input_path.to_string_lossy().into_owned()).map_err(|_| {
+    let fifo_fd = rustix_fs::open(input_path, OFlags::WRONLY, Mode::empty()).map_err(|err| {
         format!(
-            "Input fifo path contains unsupported NUL bytes: '{}'",
-            input_path.display()
-        )
-    })?;
-    let fifo_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_WRONLY) };
-    if fifo_fd < 0 {
-        return Err(format!(
             "Failed to open runtime input fifo '{}': {}",
             input_path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })?;
 
     let raw_guard = set_stdin_raw_mode()?;
-    let stdin_fd = std::io::stdin().as_raw_fd();
+    let stdin_fd = rustix::stdio::stdin();
     let mut buffer = [0_u8; 64];
     while !stop.load(Ordering::Relaxed) {
-        let read_count = unsafe {
-            libc::read(
-                stdin_fd,
-                buffer.as_mut_ptr() as *mut libc::c_void,
-                buffer.len(),
-            )
+        let read_count = match rustix::io::read(stdin_fd, &mut buffer) {
+            Ok(read_count) => read_count,
+            Err(Errno::INTR) => continue,
+            Err(err) => {
+                drop(fifo_fd);
+                drop(raw_guard);
+                let io_err = std::io::Error::from_raw_os_error(err.raw_os_error());
+                return Err(format!(
+                    "Failed to read terminal input for attach mode: {io_err}"
+                ));
+            }
         };
         if read_count > 0 {
-            let mut chunk = &buffer[..read_count as usize];
+            let mut chunk = &buffer[..read_count];
             while !chunk.is_empty() {
                 if let Some(index) = chunk.iter().position(|byte| *byte == 0x1d) {
                     if index > 0 {
-                        write_all_fd(fifo_fd, &chunk[..index])?;
+                        write_all_fd(&fifo_fd, &chunk[..index])?;
                     }
-                    unsafe {
-                        libc::close(fifo_fd);
-                    }
+                    drop(fifo_fd);
                     drop(raw_guard);
                     println!("\nDetached from service.");
                     let _ = std::io::stdout().flush();
                     return Ok(());
                 }
-                write_all_fd(fifo_fd, chunk)?;
+                write_all_fd(&fifo_fd, chunk)?;
                 chunk = &[];
             }
             continue;
@@ -322,126 +376,91 @@ pub fn forward_terminal_input_to_fifo(
         if read_count == 0 {
             break;
         }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(code) if code == libc::EINTR => continue,
-            _ => {
-                unsafe {
-                    libc::close(fifo_fd);
-                }
-                drop(raw_guard);
-                return Err(format!(
-                    "Failed to read terminal input for attach mode: {err}"
-                ));
-            }
-        }
     }
 
-    unsafe {
-        libc::close(fifo_fd);
-    }
+    drop(fifo_fd);
     drop(raw_guard);
     Ok(())
 }
 
-pub fn open_fifo_read_nonblocking(path: &Path) -> Result<libc::c_int, String> {
-    let raw = path.to_string_lossy().into_owned();
-    let c_path = CString::new(raw.as_str())
-        .map_err(|_| format!("Input fifo path contains unsupported NUL bytes: '{}'", raw))?;
-    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
-    if fd < 0 {
-        return Err(format!(
+pub fn open_fifo_read_nonblocking(path: &Path) -> Result<RuntimeFd, String> {
+    rustix_fs::open(path, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).map_err(|err| {
+        format!(
             "Failed to open runtime input fifo '{}': {}",
             path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(fd)
+            std::io::Error::from_raw_os_error(err.raw_os_error())
+        )
+    })
 }
 
 pub fn forward_fifo_input_to_pty(
     input_path: PathBuf,
-    pty_writer_fd: libc::c_int,
+    pty_writer_fd: RuntimeFd,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let fifo_fd = open_fifo_read_nonblocking(&input_path)?;
     let mut buffer = [0_u8; 512];
     while !stop.load(Ordering::Relaxed) {
-        let read_bytes = unsafe {
-            libc::read(
-                fifo_fd,
-                buffer.as_mut_ptr() as *mut libc::c_void,
-                buffer.len(),
-            )
+        let read_bytes = match rustix::io::read(&fifo_fd, &mut buffer) {
+            Ok(bytes) => bytes,
+            Err(Errno::INTR) | Err(Errno::AGAIN) => {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            Err(Errno::BADF) => break,
+            Err(err) => {
+                let io_err = std::io::Error::from_raw_os_error(err.raw_os_error());
+                drop(fifo_fd);
+                drop(pty_writer_fd);
+                return Err(format!(
+                    "Failed to read runtime input fifo '{}': {io_err}",
+                    input_path.display()
+                ));
+            }
         };
         if read_bytes > 0 {
-            write_all_fd(pty_writer_fd, &buffer[..read_bytes as usize])?;
+            write_all_fd(&pty_writer_fd, &buffer[..read_bytes])?;
             continue;
         }
         if read_bytes == 0 {
             thread::sleep(Duration::from_millis(30));
             continue;
         }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(code) if code == libc::EINTR || code == libc::EAGAIN => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            Some(code) if code == libc::EBADF => break,
-            _ => {
-                unsafe {
-                    libc::close(fifo_fd);
-                    libc::close(pty_writer_fd);
-                }
-                return Err(format!(
-                    "Failed to read runtime input fifo '{}': {err}",
-                    input_path.display()
-                ));
-            }
-        }
     }
-    unsafe {
-        libc::close(fifo_fd);
-        libc::close(pty_writer_fd);
-    }
+    drop(fifo_fd);
+    drop(pty_writer_fd);
     Ok(())
 }
 
-pub fn write_all_fd(fd: libc::c_int, payload: &[u8]) -> Result<(), String> {
+pub fn write_all_fd(fd: &RuntimeFd, payload: &[u8]) -> Result<(), String> {
     let mut offset = 0_usize;
     while offset < payload.len() {
-        let write_result = unsafe {
-            libc::write(
-                fd,
-                payload[offset..].as_ptr() as *const libc::c_void,
-                payload.len() - offset,
-            )
+        let write_result = match rustix::io::write(fd, &payload[offset..]) {
+            Ok(bytes) => bytes,
+            Err(Errno::INTR) => continue,
+            Err(Errno::PIPE) | Err(Errno::IO) | Err(Errno::BADF) => return Ok(()),
+            Err(err) => {
+                let io_err = std::io::Error::from_raw_os_error(err.raw_os_error());
+                return Err(format!("Failed to write runtime PTY input: {io_err}"));
+            }
         };
         if write_result > 0 {
-            offset += write_result as usize;
+            offset += write_result;
             continue;
         }
         if write_result == 0 {
             thread::sleep(Duration::from_millis(10));
             continue;
         }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(code) if code == libc::EINTR => continue,
-            Some(code) if code == libc::EPIPE || code == libc::EIO || code == libc::EBADF => {
-                return Ok(());
-            }
-            _ => return Err(format!("Failed to write runtime PTY input: {err}")),
-        }
     }
     Ok(())
 }
 
 pub fn write_pty_output_to_log(
-    pty_reader_fd: libc::c_int,
+    pty_reader_fd: RuntimeFd,
     mut log_file: fs::File,
 ) -> Result<(), String> {
-    let mut reader = unsafe { fs::File::from_raw_fd(pty_reader_fd) };
+    let mut reader = fs::File::from(pty_reader_fd);
     let mut buffer = [0_u8; 8192];
     loop {
         match reader.read(&mut buffer) {

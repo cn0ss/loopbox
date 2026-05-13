@@ -1,0 +1,305 @@
+/* ════════════════════════════════════════════
+   SIDEBAR
+   ════════════════════════════════════════════ */
+
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--sidebar-w);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, #0a0b0d 0%, #0c0d10 100%);
+    border-right: 1px solid var(--border);
+    padding: 26px 0 18px;
+}
+
+/* Vertical hairline glow at the sidebar's right edge */
+.sidebar::after {
+    content: "";
+    position: absolute;
+    top: 30%;
+    bottom: 30%;
+    right: -1px;
+    width: 1px;
+    background: linear-gradient(180deg,
+        transparent 0%,
+        rgba(212, 238, 68, 0.22) 50%,
+        transparent 100%);
+    pointer-events: none;
+}
+
+.sidebar-brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 0 22px 4px;
+    margin-bottom: 30px;
+}
+
+.brand-glyph {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 22px;
+    color: var(--accent);
+    line-height: 1;
+    transform: translateY(2px);
+}
+
+.brand-name {
+    font-family: var(--font-ui);
+    font-weight: 500;
+    font-size: 15px;
+    color: var(--text-bright);
+    letter-spacing: -0.025em;
+}
+
+.sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 0 10px;
+}
+
+/* Section grouping inside the nav.
+   <div class="nav-section">
+     <div class="nav-section-label">workspaces</div>
+     …
+   </div>
+*/
+.nav-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.nav-section + .nav-section {
+    margin-top: 18px;
+}
+
+.nav-section-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    padding: 0 12px 6px;
+    line-height: 1;
+}
+
+.nav-section-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+    opacity: 0.6;
+}
+
+.nav-link {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 12px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 12.5px;
+    font-weight: 400;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+    text-align: left;
+}
+
+.nav-link:hover {
+    color: var(--text);
+    background: rgba(212, 218, 226, 0.035);
+}
+
+.nav-link.active {
+    color: var(--text-bright);
+    background: rgba(212, 238, 68, 0.05);
+}
+
+.nav-link.active::before {
+    content: "";
+    position: absolute;
+    left: -10px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent);
+    box-shadow: 0 0 8px rgba(212, 238, 68, 0.5);
+}
+
+.nav-label {
+    flex: 1;
+}
+
+.nav-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    min-width: 18px;
+    text-align: right;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+}
+
+.nav-link.active .nav-count {
+    color: var(--accent);
+}
+
+/* ── Sidebar Tree ── */
+
+.nav-link-tree {
+    gap: 6px;
+}
+
+.nav-tree-arrow {
+    font-size: 9px;
+    color: var(--text-dim);
+    width: 10px;
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+    line-height: 1;
+    display: inline-block;
+}
+
+.nav-tree-arrow-open {
+    transform: rotate(90deg);
+}
+
+.nav-sandbox {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px 4px 28px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+    text-align: left;
+    width: 100%;
+    min-width: 0;
+}
+
+.nav-sandbox:hover {
+    color: var(--text);
+    background: rgba(212, 218, 226, 0.03);
+}
+
+.nav-sandbox.active {
+    color: var(--text-bright);
+    background: rgba(212, 238, 68, 0.04);
+}
+
+.nav-sandbox.active::before {
+    content: "";
+    position: absolute;
+    left: -10px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent);
+    box-shadow: 0 0 6px rgba(212, 238, 68, 0.4);
+}
+
+.nav-sandbox-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    flex-shrink: 0;
+    transition: background var(--t-fast);
+}
+
+.nav-sandbox:hover .nav-sandbox-dot {
+    background: var(--text-secondary);
+}
+
+.nav-sandbox.active .nav-sandbox-dot {
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.nav-sandbox-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.sidebar-spacer {
+    flex: 1;
+}
+
+.sidebar-footer {
+    padding: 0 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.sidebar-edition-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sidebar-version {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.sidebar-edition-badge {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 2px 6px 1px;
+    border-radius: 3px;
+    line-height: 1.4;
+}
+
+.sidebar-update-link {
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--accent);
+    padding-bottom: 1px;
+    width: fit-content;
+    transition: color var(--t-fast);
+}
+
+.sidebar-update-link:hover {
+    color: var(--accent-bright);
+}
+

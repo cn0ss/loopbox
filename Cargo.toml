@@ -1,13 +1,13 @@
 [package]
 name = "loopbox"
-version = "0.3.4"
+version = "0.3.5"
 authors = ["Niklas Schmidt <niklas@niklasschmidt.dev>"]
 homepage = "https://loopbox.tech/"
 license = "PolyForm-Noncommercial-1.0.0"
 edition = "2021"
 
 [dependencies]
-dioxus = { version = "0.7.7", features = ["router"] }
+dioxus = { version = "0.7.9", features = ["router"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 webbrowser = "1.0"
@@ -21,7 +21,9 @@ axum = "0.8.6"
 h2 = "0.4.13"
 bytes = "1.11.1"
 libc = "0.2"
+rustix = { version = "1.1.3", features = ["fs", "process", "stdio", "termios", "pty"] }
 getrandom = "0.3"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 libghostty-vt = { version = "=0.1.1", optional = true }
 libghostty-vt-sys = { version = "=0.1.1", optional = true }
 

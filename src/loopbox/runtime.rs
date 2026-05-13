@@ -1,7 +1,8 @@
 use super::{
-    config_path, discover_project_commands, merge_service_env, project_primary_host,
-    reverse_proxy_url_for_host, service_ports, sync_reverse_proxy_sidecar, LoopboxConfig,
-    ProxyEndpointProtocol, ServiceConfig, ServicePortConfig, ServiceRuntimeKind,
+    config_path, default_health_check_interval_secs, discover_project_commands, merge_service_env,
+    project_primary_host, reverse_proxy_url_for_host, service_ports, sync_reverse_proxy_sidecar,
+    LoopboxConfig, ProjectConfig, ProxyEndpointProtocol, ServiceConfig, ServicePortConfig,
+    ServiceRuntimeKind,
 };
 use axum::http::{HeaderMap, Request, Version};
 use bytes::Bytes;
@@ -92,6 +93,13 @@ struct RuntimeStore {
     running: HashMap<String, RunningService>,
     history: HashMap<String, ServiceRuntimeSnapshot>,
     log_buffers: HashMap<String, Arc<Mutex<VecDeque<String>>>>,
+    health_checks: HashMap<String, CachedHealthCheck>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedHealthCheck {
+    checked_at: SystemTime,
+    healthy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1377,7 +1385,15 @@ pub fn service_runtime_status(
     let key = runtime_key(project_name, service_name);
     if is_container_service(service) {
         let host = service_host_for(project_name, service_name, &config.global.domain_suffix);
-        return container_runtime_status(project_name, service, &project.ip, &host, &key);
+        return container_runtime_status(
+            config,
+            project,
+            project_name,
+            service,
+            &project.ip,
+            &host,
+            &key,
+        );
     }
 
     {
@@ -1397,7 +1413,22 @@ pub fn service_runtime_status(
 
                     if elapsed >= STARTING_GRACE_PERIOD_SECS {
                         let runtime_targets = reachability_targets(&running.bind_ip);
-                        if !service_ports_healthy(&running.ports, &runtime_targets, &running.host) {
+                        let effective_ports = service_ports(service);
+                        let health_ports = if effective_ports.is_empty() {
+                            &running.ports
+                        } else {
+                            &effective_ports
+                        };
+                        if !service_ports_healthy(
+                            config,
+                            project,
+                            project_name,
+                            service_name,
+                            health_ports,
+                            &runtime_targets,
+                            &running.host,
+                            &mut store.health_checks,
+                        ) {
                             state = ServiceRuntimeState::Unhealthy;
                         }
                     }
@@ -1465,7 +1496,19 @@ pub fn service_runtime_status(
 
             if elapsed >= STARTING_GRACE_PERIOD_SECS {
                 let effective_ports = service_ports(service);
-                if !service_ports_healthy(&effective_ports, &runtime_targets, &host) {
+                let mut store = runtime_store()
+                    .lock()
+                    .map_err(|_| "Runtime store lock poisoned.".to_string())?;
+                if !service_ports_healthy(
+                    config,
+                    project,
+                    project_name,
+                    service_name,
+                    &effective_ports,
+                    &runtime_targets,
+                    &host,
+                    &mut store.health_checks,
+                ) {
                     state = ServiceRuntimeState::Unhealthy;
                 }
             }
@@ -1839,7 +1882,7 @@ fn runtime_inputs_dir_path() -> PathBuf {
 fn runtime_terminals_dir_path() -> PathBuf {
     #[cfg(unix)]
     {
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         PathBuf::from("/tmp").join(format!("loopbox-{uid}-{RUNTIME_TERMINALS_DIR}"))
     }
 

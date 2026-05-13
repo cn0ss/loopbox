@@ -56,6 +56,8 @@ pub(super) fn start_container_service(
 }
 
 pub(super) fn container_runtime_status(
+    config: &LoopboxConfig,
+    project: &ProjectConfig,
     project_name: &str,
     service: &ServiceConfig,
     bind_ip: &str,
@@ -96,9 +98,21 @@ pub(super) fn container_runtime_status(
             } else {
                 ServiceRuntimeState::Running
             };
-            if elapsed >= STARTING_GRACE_PERIOD_SECS
-                && !service_ports_healthy(&ports, &runtime_targets, host)
-            {
+            if elapsed >= STARTING_GRACE_PERIOD_SECS && {
+                let mut store = runtime_store()
+                    .lock()
+                    .map_err(|_| "Runtime store lock poisoned.".to_string())?;
+                !service_ports_healthy(
+                    config,
+                    project,
+                    project_name,
+                    &service.name,
+                    &ports,
+                    &runtime_targets,
+                    host,
+                    &mut store.health_checks,
+                )
+            } {
                 runtime_state = ServiceRuntimeState::Unhealthy;
             }
 

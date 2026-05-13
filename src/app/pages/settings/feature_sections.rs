@@ -1,7 +1,9 @@
+use super::SettingsTab;
 use super::*;
 
 #[component]
 pub(super) fn SettingsFeatureSections(
+    active_tab: Signal<SettingsTab>,
     mut proxy_capture_default_input: Signal<bool>,
     mut proxy_capture_mode_input: Signal<ProxyCaptureMode>,
     mut proxy_capture_text_only_input: Signal<bool>,
@@ -38,8 +40,11 @@ pub(super) fn SettingsFeatureSections(
         resource_metrics_stats.dropped_samples
     );
 
+    let tab = active_tab();
+
     rsx! {
         // ── Support ──────────────────────────────────────
+        if tab == SettingsTab::Support {
         div { class: "settings-section",
             div { class: "settings-section-head",
                 span { class: "settings-section-icon", "⚑" }
@@ -110,8 +115,10 @@ pub(super) fn SettingsFeatureSections(
                 }
             }
         }
+        }
 
         // ── Traffic Capture ───────────────────────────────
+        if tab == SettingsTab::Traffic {
         div { class: "settings-section",
             div { class: "settings-section-head",
                 span { class: "settings-section-icon", "⊙" }
@@ -415,8 +422,10 @@ pub(super) fn SettingsFeatureSections(
                 }
             }
         }
+        }
 
         // ── Resource Metrics ──────────────────────────────
+        if tab == SettingsTab::Resources {
         div { class: "settings-section",
             div { class: "settings-section-head",
                 span { class: "settings-section-icon", "▥" }
@@ -618,6 +627,7 @@ pub(super) fn SettingsFeatureSections(
                     }
                 }
             }
+        }
         }
     }
 }

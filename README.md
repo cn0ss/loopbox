@@ -30,6 +30,7 @@ gateway.myapp.localhost   →  127.0.0.2:3000
 - **Sandbox Identity** — stable loopback IP + generated hostnames per project for predictable URLs, isolated browser storage, and managed `/etc/hosts` entries
 - **Reverse Proxy Layers** — host-based HTTP routing (`service.project.localhost`) plus loopback endpoint listeners (`grpc_h2c`, `tcp_passthrough`); falls back to `:18080` with pf redirect if `:80` is unavailable
 - **Docker Management** — bind containers to a sandbox IP (for example `127.0.0.30`) so multiple projects can reuse the same container ports without collisions
+- **Kubernetes Cluster Management** — detect/import local or remote kubeconfig contexts, inspect namespaces/workloads/services, and manage optional WireGuard connectivity per cluster
 - **Multi-Port Services** — each service can define multiple `port + protocol + health` entries (`http1`, `grpc_h2c`, `tcp_passthrough`)
 - **Dependency Map / Topology** — per-sandbox service graph with declared dependencies, ingress/proxy endpoint edges, runtime health, incidents, resource metrics, and recent traffic overlays
 - **Process Runtime** — start/stop/restart individually or all at once; PID registry survives app restarts
@@ -100,6 +101,7 @@ domain_suffix = "localhost"
 ip_base = "127.0.0."
 ip_range_start = 2
 ip_range_end = 254
+health_check_interval_secs = 10
 
 [global.resource_metrics]
 enabled = true
@@ -107,10 +109,31 @@ sample_interval_secs = 5
 retention_days = 7
 max_storage_mb = 250
 
+[[global.kubernetes.clusters]]
+name = "local-dev"
+provider = "local"
+context = "kind-loopbox"
+default_namespace = "default"
+
+[[global.kubernetes.clusters]]
+name = "prod-eu"
+provider = "remote"
+kubeconfig_path = "~/.kube/prod-eu.yaml"
+context = "prod-eu"
+default_namespace = "apps"
+
+[global.kubernetes.clusters.wireguard]
+name = "prod-eu"
+mode = "wg_quick"
+interface = "wg-prod-eu"
+config_path = "/etc/wireguard/prod-eu.conf"
+required = true
+
 [projects.myapp]
 dir = "/Users/you/dev/myapp"
 ip = "127.0.0.2"
 default_open_service = "frontend"
+health_check_interval_secs = 20
 grpc_proto_paths = ["./proto", "./apps/gateway/proto"]
 
 [[projects.myapp.services]]
@@ -123,6 +146,7 @@ env_files = [".env", ".env.local"]
 port = 8080
 protocol = "http1"
 health_path = "/health"
+health_check_interval_secs = 30
 
 [[projects.myapp.services]]
 name = "postgres"
@@ -168,6 +192,8 @@ service_name = "gateway"
 Service protocols: `http1`, `grpc_h2c`, `tcp_passthrough`.
 
 Loopbox still accepts legacy single-port service fields (`port`, `protocol`, `health_path`) and normalizes them into `services.ports` on save/load.
+
+Health checks run independently from the UI refresh tick. The default interval is `global.health_check_interval_secs` (10 seconds), projects can override it with `projects.<name>.health_check_interval_secs`, and individual `services.ports` entries can override it with `health_check_interval_secs`. Values are clamped to 2-300 seconds.
 
 Resource metrics are sampled while Loopbox or the headless Agent API is running. `sample_interval_secs` is clamped to 2-60 seconds, `retention_days` to 1-90 days, and `max_storage_mb` to 25-5,000 MB.
 

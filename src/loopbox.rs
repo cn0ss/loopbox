@@ -14,6 +14,7 @@ mod env;
 mod features;
 mod incident;
 mod install;
+mod kubernetes;
 mod mcp;
 mod projects;
 mod proxy;
@@ -79,6 +80,19 @@ pub use incident::{
     IncidentKind, IncidentSeverity, IncidentTimelineEvent,
 };
 pub use install::ensure_installed_in_applications;
+#[allow(unused_imports)]
+pub use kubernetes::{
+    cluster_snapshot, cluster_snapshot_for_namespace, cluster_summaries,
+    discover_kubernetes_clusters, import_kubernetes_clusters, parse_endpoint_slice_snapshots,
+    parse_event_snapshots, parse_ingress_snapshots, parse_namespace_names, parse_node_snapshots,
+    parse_pod_snapshots, parse_service_snapshots, parse_workload_snapshots,
+    start_cluster_wireguard, stop_cluster_wireguard, wireguard_active_from_show_output,
+    KubernetesClusterDiscovery, KubernetesClusterImport, KubernetesClusterSnapshot,
+    KubernetesConnectivityState, KubernetesEndpointSliceSnapshot, KubernetesEventSnapshot,
+    KubernetesIngressSnapshot, KubernetesNamespaceSnapshot, KubernetesNodeSnapshot,
+    KubernetesPodSnapshot, KubernetesServiceSnapshot, KubernetesTopologyEdge,
+    KubernetesTopologyNode, KubernetesTopologySnapshot, KubernetesWorkloadSnapshot,
+};
 #[allow(unused_imports)]
 pub use projects::{
     add_project, open_url_for, preview_add_project, project_env_exports, project_primary_host,
@@ -171,6 +185,10 @@ pub struct GlobalConfig {
     pub resource_metrics: ResourceMetricsSettings,
     #[serde(default)]
     pub proxy_endpoints: Vec<ProxyEndpointConfig>,
+    #[serde(default)]
+    pub kubernetes: KubernetesSettings,
+    #[serde(default = "default_health_check_interval_secs")]
+    pub health_check_interval_secs: u64,
 }
 
 impl Default for GlobalConfig {
@@ -185,7 +203,69 @@ impl Default for GlobalConfig {
             proxy_traffic: ProxyTrafficSettings::default(),
             resource_metrics: ResourceMetricsSettings::default(),
             proxy_endpoints: Vec::new(),
+            kubernetes: KubernetesSettings::default(),
+            health_check_interval_secs: default_health_check_interval_secs(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KubernetesSettings {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clusters: Vec<KubernetesClusterConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KubernetesClusterConfig {
+    pub name: String,
+    #[serde(default)]
+    pub provider: KubernetesProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kubeconfig_path: Option<String>,
+    pub context: String,
+    #[serde(default = "default_kubernetes_namespace")]
+    pub default_namespace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard: Option<WireGuardTunnelConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KubernetesProvider {
+    KubeconfigContext,
+    Local,
+    Remote,
+}
+
+impl Default for KubernetesProvider {
+    fn default() -> Self {
+        Self::KubeconfigContext
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireGuardTunnelConfig {
+    pub name: String,
+    #[serde(default)]
+    pub mode: WireGuardMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireGuardMode {
+    WgQuick,
+    Manual,
+}
+
+impl Default for WireGuardMode {
+    fn default() -> Self {
+        Self::WgQuick
     }
 }
 
@@ -360,6 +440,8 @@ pub struct ProjectConfig {
     pub dir: String,
     pub ip: String,
     pub services: Vec<ServiceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_interval_secs: Option<u64>,
     #[serde(default)]
     pub default_open_service: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,6 +479,7 @@ pub struct ServicePortEntry {
     pub port: String,
     pub protocol: String,
     pub health_path: String,
+    pub health_check_interval_secs: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -451,6 +534,8 @@ pub struct ServicePortConfig {
     pub protocol: ProxyEndpointProtocol,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_interval_secs: Option<u64>,
 }
 
 pub fn service_ports(service: &ServiceConfig) -> Vec<ServicePortConfig> {
@@ -474,6 +559,7 @@ pub fn service_ports(service: &ServiceConfig) -> Vec<ServicePortConfig> {
             port: entry.port,
             protocol: entry.protocol.clone(),
             health_path,
+            health_check_interval_secs: entry.health_check_interval_secs,
         });
     }
 
@@ -489,6 +575,7 @@ pub fn service_ports(service: &ServiceConfig) -> Vec<ServicePortConfig> {
                 port,
                 protocol: service.protocol.clone(),
                 health_path,
+                health_check_interval_secs: None,
             });
         }
     }
@@ -501,6 +588,7 @@ pub struct AddProjectInput {
     pub name: String,
     pub dir: String,
     pub ip: String,
+    pub health_check_interval_secs: String,
     pub services: Vec<ServiceEntry>,
 }
 
@@ -510,6 +598,7 @@ impl Default for AddProjectInput {
             name: String::new(),
             dir: String::new(),
             ip: String::new(),
+            health_check_interval_secs: String::new(),
             services: vec![
                 ServiceEntry {
                     name: "backend".to_string(),
@@ -517,6 +606,7 @@ impl Default for AddProjectInput {
                         port: "8080".to_string(),
                         protocol: "http1".to_string(),
                         health_path: String::new(),
+                        health_check_interval_secs: String::new(),
                     }],
                     port: "8080".to_string(),
                     protocol: "http1".to_string(),
@@ -539,6 +629,7 @@ impl Default for AddProjectInput {
                         port: "5173".to_string(),
                         protocol: "http1".to_string(),
                         health_path: String::new(),
+                        health_check_interval_secs: String::new(),
                     }],
                     port: "5173".to_string(),
                     protocol: "http1".to_string(),
@@ -564,6 +655,7 @@ impl Default for AddProjectInput {
 pub struct UpdateProjectInput {
     pub dir: String,
     pub ip: String,
+    pub health_check_interval_secs: String,
     pub services: Vec<ServiceEntry>,
 }
 
@@ -660,6 +752,10 @@ fn default_ip_range_end() -> u8 {
     254
 }
 
+fn default_health_check_interval_secs() -> u64 {
+    10
+}
+
 fn default_proxy_capture_enabled_by_default() -> bool {
     false
 }
@@ -710,6 +806,10 @@ fn default_service_port_protocol() -> ProxyEndpointProtocol {
 
 fn default_service_runtime_kind() -> ServiceRuntimeKind {
     ServiceRuntimeKind::Process
+}
+
+fn default_kubernetes_namespace() -> String {
+    "default".to_string()
 }
 
 fn default_proxy_capture_text_only() -> bool {

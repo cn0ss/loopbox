@@ -89,6 +89,7 @@ fn update_project_preserves_default_service_when_it_still_exists() {
                     health_path: None,
                 },
             ],
+            health_check_interval_secs: None,
             default_open_service: Some("backend".to_string()),
             proxy_traffic_capture_enabled: None,
             proxy_traffic_capture_mode: None,
@@ -100,6 +101,7 @@ fn update_project_preserves_default_service_when_it_still_exists() {
     let input = UpdateProjectInput {
         dir: "/tmp/niklasschmidt.dev-new".to_string(),
         ip: String::new(),
+        health_check_interval_secs: String::new(),
         services: vec![
             ServiceEntry {
                 name: "backend".to_string(),
@@ -163,6 +165,7 @@ fn add_project_allows_service_without_port() {
         name: "tools".to_string(),
         dir: "/tmp/tools".to_string(),
         ip: "127.0.0.40".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "convex".to_string(),
             ports: vec![],
@@ -198,6 +201,7 @@ fn default_open_service_prefers_service_with_port() {
         name: "mixed".to_string(),
         dir: "/tmp/mixed".to_string(),
         ip: "127.0.0.41".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![
             ServiceEntry {
                 name: "worker".to_string(),
@@ -260,6 +264,7 @@ fn add_project_writes_agents_guidance_file() {
         name: "guided".to_string(),
         dir: root.display().to_string(),
         ip: "127.0.0.52".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "web".to_string(),
             ports: vec![],
@@ -288,6 +293,14 @@ fn add_project_writes_agents_guidance_file() {
     assert!(agents.contains("## Loopbox Agent API"));
     assert!(agents.contains("Read discovery_file first on every new session or reconnect."));
     assert!(agents.contains("http://127.0.0.1:39393/v1/openapi.json"));
+    assert!(agents.contains("do not add or hardcode dev-server host/port flags"));
+    assert!(agents.contains("Do not create Vite fallback-port handling"));
+    assert!(agents.contains(
+        "Do not start, stop, restart, or rebind services unless the user explicitly asks."
+    ));
+    assert!(
+        agents.contains("do not hardcode `--host`, `--port`, `--strictPort`, fallback Vite ports")
+    );
     let expected_discovery_path = agent_api_discovery_path().display().to_string();
     assert!(agents.contains(&expected_discovery_path));
 
@@ -308,6 +321,7 @@ fn preview_add_project_does_not_write_agent_guidance_or_mutate_config() {
         name: "previewed".to_string(),
         dir: root.display().to_string(),
         ip: String::new(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "web".to_string(),
             ports: vec![],
@@ -346,6 +360,7 @@ fn add_project_rejects_unknown_dependencies() {
         name: "deps".to_string(),
         dir: "/tmp/deps".to_string(),
         ip: "127.0.0.42".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "server".to_string(),
             ports: vec![],
@@ -377,6 +392,7 @@ fn add_project_normalizes_dependency_list() {
         name: "depsnorm".to_string(),
         dir: "/tmp/depsnorm".to_string(),
         ip: "127.0.0.43".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![
             ServiceEntry {
                 name: "gateway".to_string(),
@@ -437,6 +453,7 @@ fn add_project_parses_service_protocol() {
         name: "grpc".to_string(),
         dir: "/tmp/grpc".to_string(),
         ip: "127.0.0.44".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "gateway".to_string(),
             ports: vec![],
@@ -472,6 +489,7 @@ fn add_project_parses_container_runtime_service() {
         name: "containers".to_string(),
         dir: "/tmp/containers".to_string(),
         ip: "127.0.0.45".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "db".to_string(),
             ports: vec![],
@@ -516,6 +534,7 @@ fn add_project_rejects_container_runtime_without_image() {
         name: "missing-image".to_string(),
         dir: "/tmp/containers".to_string(),
         ip: "127.0.0.46".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "db".to_string(),
             ports: vec![],
@@ -547,6 +566,7 @@ fn add_project_rejects_unknown_service_protocol() {
         name: "badproto".to_string(),
         dir: "/tmp/badproto".to_string(),
         ip: "127.0.0.45".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "api".to_string(),
             ports: vec![],
@@ -578,6 +598,7 @@ fn add_project_normalizes_smart_dashes_in_command() {
         name: "smart-dash".to_string(),
         dir: "/tmp/smart-dash".to_string(),
         ip: "127.0.0.47".to_string(),
+        health_check_interval_secs: String::new(),
         services: vec![ServiceEntry {
             name: "mobile".to_string(),
             ports: vec![],

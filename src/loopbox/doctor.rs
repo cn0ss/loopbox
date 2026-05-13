@@ -3,16 +3,18 @@ use super::projects::{effective_hosts_for_project, expand_tilde, validate_projec
 use super::{
     effective_reverse_proxy_status, proxy_redirect_configured, proxy_redirect_required,
     reverse_proxy_fallback_port, service_ports, service_runtime_status, DoctorFixAction,
-    DoctorIssue, DoctorLevel, LoopboxConfig, ServiceRuntimeState,
+    DoctorIssue, DoctorLevel, KubernetesConnectivityState, LoopboxConfig, ServiceRuntimeState,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
     let mut issues = Vec::new();
-    if config.projects.is_empty() {
+    issues.extend(kubernetes_doctor_issues(config));
+    if config.projects.is_empty() && config.global.kubernetes.clusters.is_empty() {
         issues.push(DoctorIssue::info(
             "No projects configured yet. Add one to create a sandbox identity.",
         ));
@@ -314,6 +316,77 @@ pub fn doctor_report(config: &LoopboxConfig) -> Vec<DoctorIssue> {
     issues
 }
 
+fn kubernetes_doctor_issues(config: &LoopboxConfig) -> Vec<DoctorIssue> {
+    let mut issues = Vec::new();
+    if config.global.kubernetes.clusters.is_empty() {
+        return issues;
+    }
+
+    if !command_available("kubectl", &["version", "--client"]) {
+        issues.push(DoctorIssue::warning(
+            None,
+            "Kubernetes cluster management is configured but kubectl is not available on PATH.",
+        ));
+    }
+
+    for cluster in &config.global.kubernetes.clusters {
+        let label = format!("Kubernetes cluster '{}'", cluster.name);
+        if let Some(path) = cluster.kubeconfig_path.as_ref() {
+            let expanded = expand_tilde(path);
+            if !Path::new(&expanded).exists() {
+                issues.push(DoctorIssue::warning(
+                    None,
+                    format!("{label} kubeconfig '{}' does not exist.", path),
+                ));
+            }
+        }
+
+        if let Some(wireguard) = cluster.wireguard.as_ref() {
+            if wireguard.interface.is_none() && wireguard.config_path.is_none() {
+                issues.push(DoctorIssue::warning(
+                    None,
+                    format!(
+                        "{label} WireGuard tunnel '{}' has no interface or config_path.",
+                        wireguard.name
+                    ),
+                ));
+            }
+            if wireguard.required
+                && (wireguard.interface.is_some() || wireguard.config_path.is_some())
+            {
+                match super::kubernetes::cluster_connectivity_state(cluster) {
+                    KubernetesConnectivityState::Inactive => issues.push(DoctorIssue::warning(
+                        None,
+                        format!(
+                            "{label} requires WireGuard tunnel '{}' but it is not active.",
+                            wireguard.name
+                        ),
+                    )),
+                    KubernetesConnectivityState::Error(err) => issues.push(DoctorIssue::warning(
+                        None,
+                        format!(
+                            "{label} WireGuard tunnel '{}' could not be checked: {err}",
+                            wireguard.name
+                        ),
+                    )),
+                    KubernetesConnectivityState::NotConfigured
+                    | KubernetesConnectivityState::Active => {}
+                }
+            }
+        }
+    }
+
+    issues
+}
+
+fn command_available(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn is_secure_context_http_host(host: &str) -> bool {
     host == "localhost" || host.ends_with(".localhost")
 }
@@ -392,6 +465,11 @@ mod tests {
         expected_host_mapping_ips, hosts_file_contains_mapping,
         hosts_file_contains_mapping_for_any_ip, is_secure_context_http_host, resolve_host_ips,
     };
+    use crate::loopbox::{
+        GlobalConfig, KubernetesClusterConfig, KubernetesProvider, KubernetesSettings,
+        LoopboxConfig, WireGuardMode, WireGuardTunnelConfig,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn secure_context_host_detection() {
@@ -447,5 +525,41 @@ mod tests {
     fn expected_host_mapping_ips_trims_whitespace() {
         let expected = expected_host_mapping_ips(" 127.0.0.30 ");
         assert_eq!(expected, vec!["127.0.0.30".to_string()]);
+    }
+
+    #[test]
+    fn doctor_reports_kubernetes_static_configuration_issues() {
+        let config = LoopboxConfig {
+            global: GlobalConfig {
+                kubernetes: KubernetesSettings {
+                    clusters: vec![KubernetesClusterConfig {
+                        name: "prod".to_string(),
+                        provider: KubernetesProvider::Remote,
+                        kubeconfig_path: Some("/definitely/missing/loopbox-kubeconfig".to_string()),
+                        context: "prod-context".to_string(),
+                        default_namespace: "apps".to_string(),
+                        wireguard: Some(WireGuardTunnelConfig {
+                            name: "prod-wg".to_string(),
+                            mode: WireGuardMode::WgQuick,
+                            interface: None,
+                            config_path: None,
+                            required: true,
+                        }),
+                    }],
+                },
+                ..GlobalConfig::default()
+            },
+            projects: BTreeMap::new(),
+        };
+
+        let messages = super::kubernetes_doctor_issues(&config)
+            .into_iter()
+            .map(|issue| issue.message)
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().any(|message| message
+            .contains("kubeconfig '/definitely/missing/loopbox-kubeconfig' does not exist")));
+        assert!(messages.iter().any(|message| message
+            .contains("WireGuard tunnel 'prod-wg' has no interface or config_path")));
     }
 }

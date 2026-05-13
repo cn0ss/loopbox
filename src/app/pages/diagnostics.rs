@@ -53,19 +53,28 @@ pub(in crate::app) fn render_diagnostics_page(
 
     rsx! {
         div { class: "page diagnostics-page",
-            div { class: "page-header diagnostics-header",
+            div { class: "page-header",
                 div { class: "page-header-left",
-                    h1 { class: "page-title", "Diagnostics" }
-                    span { class: "panel-badge", "{active_count} active" }
+                    div { class: "page-header-stack",
+                        span { class: "page-eyebrow", "Investigate" }
+                        div {
+                            style: "display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;",
+                            h1 { class: "page-title", "diagnostics" }
+                            span { class: "status-badge status-badge--neutral", "{active_count} active" }
+                        }
+                        p { class: "page-subtitle",
+                            "Bundled logs, runtime, and traffic for an incident — handed to an agent for root-cause analysis."
+                        }
+                    }
                 }
             }
 
             if sessions.is_empty() {
                 div { class: "empty-state diagnostics-empty",
-                    div { class: "empty-state-icon", "◎" }
-                    h2 { class: "empty-state-title", "No diagnosis sessions" }
+                    div { class: "empty-state-icon", "—" }
+                    h2 { class: "empty-state-title", "no diagnosis sessions" }
                     p { class: "empty-state-desc",
-                        "Start a diagnosis from a sandbox, runtime alert, or incident timeline."
+                        "Diagnoses bundle the relevant logs, runtime, and traffic for an incident so an agent can reason over it. Open one from a sandbox, runtime alert, or the incident timeline."
                     }
                 }
             } else {

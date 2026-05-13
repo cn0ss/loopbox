@@ -1,4 +1,5 @@
 use crate::app::models::Notice;
+use crate::app::models::{DetailTab, Page};
 use crate::app::utils::copy_to_clipboard;
 use crate::loopbox::{DoctorFixAction, DoctorIssue, DoctorLevel, LoopboxConfig};
 use dioxus::prelude::*;
@@ -54,6 +55,9 @@ pub(super) fn ProjectCard(
 #[component]
 pub(super) fn DoctorIssueRow(
     issue: DoctorIssue,
+    mut selected_project: Signal<Option<String>>,
+    mut requested_detail_tab: Signal<Option<DetailTab>>,
+    mut current_page: Signal<Page>,
     config: Signal<LoopboxConfig>,
     mut notice: Signal<Option<Notice>>,
 ) -> Element {
@@ -67,14 +71,30 @@ pub(super) fn DoctorIssueRow(
         DoctorLevel::Warning => "warn",
         DoctorLevel::Info => "info",
     };
+    let location_project = issue
+        .project
+        .as_ref()
+        .filter(|_| is_location_issue(&issue.message))
+        .cloned();
 
     rsx! {
         li { class: "doctor-item {level_class}",
             span { class: "doctor-badge", "{level_label}" }
-            if let Some(project) = issue.project {
+            if let Some(project) = issue.project.clone() {
                 span { class: "doctor-project", "{project}" }
             }
             p { class: "doctor-message", "{issue.message}" }
+            if let Some(project) = location_project {
+                button {
+                    class: "btn btn-sm btn-outline doctor-fix-btn",
+                    onclick: move |_| {
+                        current_page.set(Page::Sandboxes);
+                        requested_detail_tab.set(Some(DetailTab::Config));
+                        selected_project.set(Some(project.clone()));
+                    },
+                    "Edit Location"
+                }
+            }
             if let Some(fix) = issue.fix.clone() {
                 {{
                     let fix_label = fix.label().to_string();
@@ -104,5 +124,28 @@ pub(super) fn DoctorIssueRow(
                 }}
             }
         }
+    }
+}
+
+fn is_location_issue(message: &str) -> bool {
+    message.starts_with("Directory '")
+        || (message.starts_with("Service '")
+            && message.contains("' workdir '")
+            && message.ends_with(" does not exist."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_location_issue;
+
+    #[test]
+    fn detects_project_and_service_location_warnings() {
+        assert!(is_location_issue(
+            "Directory '/Users/niklas/development/loopbox-web' does not exist."
+        ));
+        assert!(is_location_issue(
+            "Service 'loopbox-web' workdir '/Users/niklas/development/loopbox-web' does not exist."
+        ));
+        assert!(!is_location_issue("Reverse proxy is not running."));
     }
 }

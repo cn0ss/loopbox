@@ -335,33 +335,37 @@ pub(super) fn NewSandboxWizard(
     let browser_parent = parent_directory(&browser_path_value);
 
     rsx! {
-        div { class: "page",
-            div { class: "page-header",
-                div { class: "page-header-left",
-                    button {
-                        class: "breadcrumb-link",
-                        onclick: move |_| {
-                            add_form.set(AddProjectInput::default());
-                            selected_blueprint_signal.set(SandboxBlueprint::AutoDetect);
-                            launch_project_name.set(None);
-                            launch_status.set(GuidedLaunchStatus::Dismissed);
-                            step.set(1);
-                            current_page.set(Page::Sandboxes);
-                        },
-                        "\u{2190} Back to Sandboxes"
-                    }
+        div { class: "page wizard-page",
+            div { class: "detail-breadcrumb wizard-breadcrumb",
+                button {
+                    class: "breadcrumb-link",
+                    onclick: move |_| {
+                        add_form.set(AddProjectInput::default());
+                        selected_blueprint_signal.set(SandboxBlueprint::AutoDetect);
+                        launch_project_name.set(None);
+                        launch_status.set(GuidedLaunchStatus::Dismissed);
+                        step.set(1);
+                        current_page.set(Page::Sandboxes);
+                    },
+                    "← Sandboxes"
                 }
+                span { class: "breadcrumb-sep", "›" }
+                span { class: "breadcrumb-current", "new sandbox" }
             }
 
             h1 { class: "page-title wizard-title", "New Sandbox" }
+            p { class: "wizard-page-intro",
+                "Five short steps. Loopbox assigns a loopback IP, registers hostnames, and (optionally) launches your services."
+            }
 
+            // Step progress rail
             div { class: "wizard-steps",
                 for (index, label) in [
-                    (1_u8, "Blueprint"),
-                    (2_u8, "Project"),
-                    (3_u8, "Services"),
-                    (4_u8, "Review"),
-                    (5_u8, "Launch"),
+                    (1_u8, "blueprint"),
+                    (2_u8, "project"),
+                    (3_u8, "services"),
+                    (4_u8, "review"),
+                    (5_u8, "launch"),
                 ] {
                     {{
                         let unlocked = if launch_project.is_some() {
@@ -471,6 +475,14 @@ pub(super) fn NewSandboxWizard(
                                 value: "{add_form_snapshot.dir}",
                                 placeholder: "~/dev/app1",
                                 oninput: move |evt| add_form.write().dir = evt.value(),
+                            }
+                        }
+                        label { class: "field",
+                            span { "Health Interval" }
+                            input {
+                                value: "{add_form_snapshot.health_check_interval_secs}",
+                                placeholder: "Default seconds",
+                                oninput: move |evt| add_form.write().health_check_interval_secs = evt.value(),
                             }
                         }
                     }
@@ -876,6 +888,23 @@ pub(super) fn NewSandboxWizard(
                                                                 });
                                                             },
                                                         }
+                                                        input {
+                                                            value: "{port_entry.health_check_interval_secs}",
+                                                            placeholder: "Health interval seconds",
+                                                            oninput: move |evt: Event<FormData>| {
+                                                                add_form.with_mut(|form| {
+                                                                    if let Some(service) = form.services.get_mut(i) {
+                                                                        if service.ports.is_empty() {
+                                                                            service.ports = service_entry_port_rows(service);
+                                                                        }
+                                                                        if let Some(port) = service.ports.get_mut(port_idx) {
+                                                                            port.health_check_interval_secs = evt.value();
+                                                                        }
+                                                                        sync_service_entry_primary_port(service);
+                                                                    }
+                                                                });
+                                                            },
+                                                        }
                                                         button {
                                                             class: "btn btn-sm btn-outline",
                                                             onclick: move |_| {
@@ -1041,6 +1070,16 @@ pub(super) fn NewSandboxWizard(
                                     "auto"
                                 } else {
                                     "{add_form_snapshot.ip}"
+                                }
+                            }
+                        }
+                        div { class: "wizard-review-card",
+                            span { class: "wizard-review-label", "Health" }
+                            p { class: "wizard-review-value",
+                                if add_form_snapshot.health_check_interval_secs.trim().is_empty() {
+                                    "default"
+                                } else {
+                                    "{add_form_snapshot.health_check_interval_secs}s"
                                 }
                             }
                         }
@@ -1518,6 +1557,7 @@ fn build_expo_template_services(
         port: metro_port.to_string(),
         protocol: "http1".to_string(),
         health_path: String::new(),
+        health_check_interval_secs: String::new(),
     }];
     entry.autostart = false;
     sync_service_entry_primary_port(&mut entry);
@@ -2025,6 +2065,7 @@ mod tests {
                 port: "8080".to_string(),
                 protocol: "http1".to_string(),
                 health_path: String::new(),
+                health_check_interval_secs: String::new(),
             }],
             port: "8080".to_string(),
             protocol: "http1".to_string(),
@@ -2045,6 +2086,7 @@ mod tests {
             name: "demo".to_string(),
             dir: project_dir.to_string_lossy().to_string(),
             ip: "127.0.0.42".to_string(),
+            health_check_interval_secs: String::new(),
             services: vec![service("api"), service("web")],
         };
 
@@ -2075,6 +2117,7 @@ mod tests {
                         port,
                         protocol: protocol.clone(),
                         health_path: None,
+                        health_check_interval_secs: None,
                     }]
                 })
                 .unwrap_or_default(),
@@ -2101,6 +2144,7 @@ mod tests {
                     dir: "/tmp/demo".to_string(),
                     ip: "127.0.0.30".to_string(),
                     services,
+                    health_check_interval_secs: None,
                     default_open_service: default_open_service.map(str::to_string),
                     proxy_traffic_capture_enabled: None,
                     proxy_traffic_capture_mode: None,

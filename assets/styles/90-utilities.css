@@ -1,0 +1,64 @@
+/* ════════════════════════════════════════════
+   UTILITY CLASSES
+   ════════════════════════════════════════════ */
+
+.text-dim {
+    color: var(--text-dim);
+    font-size: 12px;
+}
+
+/* ════════════════════════════════════════════
+   SCROLLBARS
+   ════════════════════════════════════════════ */
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(108, 117, 125, 0.45);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(154, 163, 173, 0.55);
+}
+
+/* ════════════════════════════════════════════
+   CHECKBOX (autostart toggle)
+   ════════════════════════════════════════════ */
+
+input[type="checkbox"] {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    cursor: pointer;
+    position: relative;
+    transition: all 0.15s;
+}
+
+input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+input[type="checkbox"]:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid var(--accent-ink);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+

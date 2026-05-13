@@ -1,9 +1,10 @@
 use super::projects::normalize_domain_suffix;
 use super::{
-    default_agent_api_port, default_domain_suffix, default_ip_base, enforce_traffic_capture_mode,
+    default_agent_api_port, default_domain_suffix, default_health_check_interval_secs,
+    default_ip_base, enforce_traffic_capture_mode,
     resource_metrics::sanitize_resource_metrics_settings, service_ports, LoopboxConfig,
     ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol, ServicePortConfig,
-    ServiceRuntimeKind,
+    ServiceRuntimeKind, WireGuardTunnelConfig,
 };
 use std::env;
 use std::fs;
@@ -70,6 +71,7 @@ pub fn update_global_settings(
     suffix: &str,
     range_start: &str,
     range_end: &str,
+    health_check_interval_secs: &str,
 ) -> Result<(), String> {
     let parsed_start = range_start
         .trim()
@@ -89,11 +91,18 @@ pub fn update_global_settings(
     if parsed_start > parsed_end {
         return Err("IP range start must be <= IP range end.".to_string());
     }
+    let parsed_health_interval = health_check_interval_secs
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "Health check interval must be seconds between 2 and 300.".to_string())?;
 
     let cleaned_suffix = normalize_domain_suffix(suffix);
     config.global.domain_suffix = cleaned_suffix;
     config.global.ip_range_start = parsed_start;
     config.global.ip_range_end = parsed_end;
+    config.global.health_check_interval_secs =
+        sanitize_health_check_interval_secs(Some(parsed_health_interval))
+            .unwrap_or_else(default_health_check_interval_secs);
 
     Ok(())
 }
@@ -126,6 +135,9 @@ fn normalize_config(config: &mut LoopboxConfig) {
     if config.global.agent_api.port == 0 {
         config.global.agent_api.port = default_agent_api_port();
     }
+    config.global.health_check_interval_secs =
+        sanitize_health_check_interval_secs(Some(config.global.health_check_interval_secs))
+            .unwrap_or_else(default_health_check_interval_secs);
     sanitize_resource_metrics_settings(&mut config.global.resource_metrics);
 
     // Legacy migration: bool preview flag -> capture mode.
@@ -204,6 +216,7 @@ fn normalize_config(config: &mut LoopboxConfig) {
         }
     }
     config.global.proxy_endpoints = migrated_global_proxy_endpoints;
+    sanitize_kubernetes_settings(config);
     for (project_name, endpoint) in project_proxy_endpoint_migrations {
         if let Some(project) = config.projects.get_mut(&project_name) {
             project.proxy_endpoints.push(endpoint);
@@ -212,6 +225,8 @@ fn normalize_config(config: &mut LoopboxConfig) {
 
     for (project_name, project) in config.projects.iter_mut() {
         project.dir = project.dir.trim().to_string();
+        project.health_check_interval_secs =
+            sanitize_health_check_interval_secs(project.health_check_interval_secs);
         project.proxy_traffic_capture_mode = project
             .proxy_traffic_capture_mode
             .clone()
@@ -285,6 +300,86 @@ fn normalize_config(config: &mut LoopboxConfig) {
     }
 }
 
+fn sanitize_kubernetes_settings(config: &mut LoopboxConfig) {
+    let mut seen_clusters = std::collections::HashSet::new();
+    config.global.kubernetes.clusters = config
+        .global
+        .kubernetes
+        .clusters
+        .iter()
+        .filter_map(|cluster| {
+            let name = normalize_kubernetes_name(&cluster.name);
+            let context = cluster.context.trim().to_string();
+            if name.is_empty() || context.is_empty() || !seen_clusters.insert(name.clone()) {
+                return None;
+            }
+
+            let namespace = cluster.default_namespace.trim();
+            Some(crate::loopbox::KubernetesClusterConfig {
+                name,
+                provider: cluster.provider,
+                kubeconfig_path: cluster
+                    .kubeconfig_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string()),
+                context,
+                default_namespace: if namespace.is_empty() {
+                    "default".to_string()
+                } else {
+                    namespace.to_string()
+                },
+                wireguard: sanitize_wireguard_config(cluster.wireguard.as_ref()),
+            })
+        })
+        .collect();
+}
+
+fn normalize_kubernetes_name(raw: &str) -> String {
+    raw.trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn sanitize_wireguard_config(
+    value: Option<&WireGuardTunnelConfig>,
+) -> Option<WireGuardTunnelConfig> {
+    let config = value?;
+    let interface = config
+        .interface
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let config_path = config
+        .config_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let name = config.name.trim();
+    let name = if name.is_empty() {
+        interface
+            .as_deref()
+            .or(config_path.as_deref())
+            .unwrap_or("wireguard")
+            .to_string()
+    } else {
+        normalize_kubernetes_name(name)
+    };
+
+    Some(WireGuardTunnelConfig {
+        name,
+        mode: config.mode,
+        interface,
+        config_path,
+        required: config.required,
+    })
+}
+
 fn sanitize_service_ports(service: &crate::loopbox::ServiceConfig) -> Vec<ServicePortConfig> {
     let mut sanitized = Vec::new();
     let mut seen_ports = std::collections::HashSet::new();
@@ -307,10 +402,21 @@ fn sanitize_service_ports(service: &crate::loopbox::ServiceConfig) -> Vec<Servic
             port: entry.port,
             protocol: entry.protocol,
             health_path,
+            health_check_interval_secs: sanitize_health_check_interval_secs(
+                entry.health_check_interval_secs,
+            ),
         });
     }
 
     sanitized
+}
+
+pub(super) fn sanitize_health_check_interval_secs(value: Option<u64>) -> Option<u64> {
+    let value = value?;
+    if value == 0 {
+        return None;
+    }
+    Some(value.clamp(2, 300))
 }
 
 fn sanitize_grpc_proto_paths(values: &[String]) -> Vec<String> {

@@ -6,6 +6,13 @@ use crate::loopbox::{self, LoopboxConfig};
 use dioxus::html::input_data::keyboard_types::{Key, Modifiers};
 use dioxus::prelude::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SystemTab {
+    Setup,
+    HostsFile,
+    Platform,
+}
+
 // ── Hosts syntax highlighting ──
 
 fn html_escape(s: &str) -> String {
@@ -529,149 +536,186 @@ pub(in crate::app) fn render_system_page(
         hosts_path
     );
     let managed_hosts_label = format!("Managed {} Block", hosts_path);
+    let mut active_tab = use_signal(|| SystemTab::Setup);
+    let tab = active_tab();
 
     rsx! {
         if page == Page::System {
-            div { class: "page",
+            div { class: "page system-page",
                 div { class: "page-header",
                     div { class: "page-header-left",
-                        h1 { class: "page-title", "System" }
-                    }
-                }
-
-                section { class: "panel platform-support-panel",
-                    div { class: "panel-header",
-                        div {
-                            h2 { "Platform Support" }
-                            p { class: "panel-subtitle", "{platform_support_summary()}" }
-                        }
-                        span { class: "panel-badge", "{platform_support_label()}" }
-                    }
-
-                    div { class: "platform-capability-grid",
-                        for (label, value) in platform_capability_rows() {
-                            div { class: "platform-capability-row", key: "{label}",
-                                span { class: "platform-capability-label", "{label}" }
-                                span { class: "platform-capability-value", "{value}" }
+                        div { class: "page-header-stack",
+                            span { class: "page-eyebrow", "Host" }
+                            div {
+                                style: "display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;",
+                                h1 { class: "page-title", "system" }
+                                span { class: "status-badge status-badge--warn", "admin required" }
+                            }
+                            div { class: "page-meta",
+                                span { class: "page-meta-item",
+                                    "platform" strong { "\u{00a0}{platform_support_label()}" }
+                                }
+                                span { class: "page-meta-sep", "·" }
+                                span { class: "page-meta-item",
+                                    "{setup_alias_count}" "\u{00a0}loopback ips"
+                                }
+                                span { class: "page-meta-sep", "·" }
+                                span { class: "page-meta-item",
+                                    "{setup_hosts_count}" "\u{00a0}hostnames across" "\u{00a0}{setup_lines_count}" "\u{00a0}sandboxes"
+                                }
                             }
                         }
                     }
                 }
 
-                section { class: "panel",
-                    div { class: "panel-header",
-                        div {
-                            h2 { "System Setup" }
-                            p { class: "panel-subtitle",
-                                "{system_setup_summary}"
+                div { class: "tab-bar system-tabs",
+                    button {
+                        class: if tab == SystemTab::Setup { "active" } else { "" },
+                        onclick: move |_| active_tab.set(SystemTab::Setup),
+                        "setup"
+                    }
+                    button {
+                        class: if tab == SystemTab::HostsFile { "active" } else { "" },
+                        onclick: move |_| active_tab.set(SystemTab::HostsFile),
+                        "hosts file"
+                    }
+                    button {
+                        class: if tab == SystemTab::Platform { "active" } else { "" },
+                        onclick: move |_| active_tab.set(SystemTab::Platform),
+                        "platform"
+                    }
+                }
+
+                if tab == SystemTab::Setup {
+                    section { class: "panel system-action-panel",
+                        div { class: "panel-header",
+                            div {
+                                h2 { "System Setup" }
+                                p { class: "panel-subtitle", "{system_setup_summary}" }
+                            }
+                            if let Some(last_setup) = setup_status() {
+                                span {
+                                    class: format!("status-badge status-badge--{}",
+                                        match last_setup.kind.class_name() {
+                                            c if c.contains("error") => "error",
+                                            c if c.contains("warn") => "warn",
+                                            _ => "ok",
+                                        }
+                                    ),
+                                    "{last_setup.action} · {last_setup.timestamp}"
+                                }
                             }
                         }
-                        span { class: "panel-badge", "admin required" }
-                    }
 
-                    div { class: "setup-stats",
-                        div { class: "setup-stat",
-                            span { class: "setup-stat-value", "{setup_alias_count}" }
-                            span { class: "setup-stat-label", "loopback IPs" }
-                        }
-                        div { class: "setup-stat",
-                            span { class: "setup-stat-value", "{setup_lines_count}" }
-                            span { class: "setup-stat-label", "hosts lines" }
-                        }
-                        div { class: "setup-stat",
-                            span { class: "setup-stat-value", "{setup_hosts_count}" }
-                            span { class: "setup-stat-label", "hostnames" }
-                        }
-                    }
-
-                    div { class: "form-actions",
-                        button {
-                            class: "btn btn-primary",
-                            disabled: !can_apply_setup,
-                            onclick: move |_| {
-                                apply_setup_result(
-                                    loopbox::apply_system_setup(&config()),
-                                    "Applied",
-                                    "Apply Failed",
-                                    notice,
-                                    setup_status,
-                                );
-                            },
-                            "Setup System"
-                        }
-                        button {
-                            class: "btn btn-danger",
-                            onclick: move |_| {
-                                apply_setup_result(
-                                    loopbox::revert_system_setup(&config()),
-                                    "Reverted",
-                                    "Revert Failed",
-                                    notice,
-                                    setup_status,
-                                );
-                            },
-                            "Revert Setup"
-                        }
-                        button {
-                            class: "btn btn-outline",
-                            onclick: move |_| {
-                                let current = show_setup_script();
-                                show_setup_script.set(!current);
-                            },
-                            if show_setup_script() {
-                                "Hide Script"
-                            } else {
-                                "Show Script"
+                        div { class: "form-actions system-actions",
+                            button {
+                                class: "btn btn-primary",
+                                disabled: !can_apply_setup,
+                                onclick: move |_| {
+                                    apply_setup_result(
+                                        loopbox::apply_system_setup(&config()),
+                                        "Applied",
+                                        "Apply Failed",
+                                        notice,
+                                        setup_status,
+                                    );
+                                },
+                                "Apply system setup"
+                            }
+                            button {
+                                class: "btn btn-outline",
+                                onclick: move |_| {
+                                    let current = show_setup_script();
+                                    show_setup_script.set(!current);
+                                },
+                                if show_setup_script() {
+                                    "Hide generated script"
+                                } else {
+                                    "Preview generated script"
+                                }
+                            }
+                            div { class: "system-actions-spacer" }
+                            button {
+                                class: "btn btn-danger",
+                                onclick: move |_| {
+                                    apply_setup_result(
+                                        loopbox::revert_system_setup(&config()),
+                                        "Reverted",
+                                        "Revert Failed",
+                                        notice,
+                                        setup_status,
+                                    );
+                                },
+                                "Revert setup"
                             }
                         }
-                    }
 
-                    if !can_apply_setup {
-                        p { class: "panel-help",
-                            "Add at least one sandbox before running system setup."
-                        }
-                    } else {
-                        p { class: "panel-help",
-                            "You will get an elevated system prompt when applying setup."
-                        }
-                    }
-
-                    if let Some(last_setup) = setup_status() {
-                        div {
-                            class: format!("setup-status {}", last_setup.kind.class_name()),
-                            p { class: "setup-status-meta",
-                                "{last_setup.action} \u{2022} {last_setup.timestamp}"
+                        if !can_apply_setup {
+                            p { class: "panel-help system-help-warn",
+                                "Add at least one sandbox before running system setup."
                             }
-                            p { class: "setup-status-message", "{last_setup.message}" }
+                        } else {
+                            p { class: "panel-help",
+                                "You'll be prompted for elevated privileges when applying."
+                            }
                         }
-                    }
 
-                    if show_setup_script() {
-                        h3 { class: "panel-section-title", "Generated Script" }
+                        if let Some(last_setup) = setup_status() {
+                            p { class: "panel-help",
+                                style: "font-family: var(--font-ui); color: var(--text-secondary);",
+                                "{last_setup.message}"
+                            }
+                        }
+
+                        if show_setup_script() {
+                            h3 { class: "panel-section-title", "Generated Script" }
+                            textarea {
+                                class: "code-box",
+                                readonly: true,
+                                value: "{apply_script_preview}",
+                            }
+                        }
+
+                        h3 { class: "panel-section-title", "{managed_hosts_label}" }
                         textarea {
-                            class: "code-box",
+                            class: "code-box code-box-sm",
                             readonly: true,
-                            value: "{apply_script_preview}",
+                            value: "{hosts_preview}",
                         }
-                    }
-
-                    h3 { class: "panel-section-title", "{managed_hosts_label}" }
-                    textarea {
-                        class: "code-box code-box-sm",
-                        readonly: true,
-                        value: "{hosts_preview}",
                     }
                 }
 
-                HostsEditor {
-                    hosts_path,
-                    hosts_is_loaded,
-                    hosts_dirty,
-                    hosts_outside_danger,
-                    hosts_content,
-                    hosts_original,
-                    hosts_loaded,
-                    notice,
+                if tab == SystemTab::HostsFile {
+                    HostsEditor {
+                        hosts_path,
+                        hosts_is_loaded,
+                        hosts_dirty,
+                        hosts_outside_danger,
+                        hosts_content,
+                        hosts_original,
+                        hosts_loaded,
+                        notice,
+                    }
+                }
+
+                if tab == SystemTab::Platform {
+                    section { class: "panel platform-support-panel",
+                        div { class: "panel-header",
+                            div {
+                                h2 { "Platform Capabilities" }
+                                p { class: "panel-subtitle", "{platform_support_summary()}" }
+                            }
+                        }
+
+                        div { class: "platform-capability-grid",
+                            for (label, value) in platform_capability_rows() {
+                                div { class: "platform-capability-row", key: "{label}",
+                                    span { class: "platform-capability-label", "{label}" }
+                                    span { class: "platform-capability-value", "{value}" }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

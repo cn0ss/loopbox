@@ -1285,6 +1285,7 @@ mod tests {
             port,
             protocol: ProxyEndpointProtocol::Http1,
             health_path: Some("/health".to_string()),
+            health_check_interval_secs: None,
         }
     }
 
@@ -1380,6 +1381,7 @@ mod tests {
                 service("postgres", vec![http_port(5432)], Vec::new()),
                 service("api", vec![http_port(8080)], vec!["postgres"]),
             ],
+            health_check_interval_secs: None,
             default_open_service: Some("api".to_string()),
             proxy_traffic_capture_enabled: None,
             proxy_traffic_capture_mode: None,
@@ -1444,6 +1446,7 @@ mod tests {
                 service("db", vec![http_port(5432)], Vec::new()),
                 service("api", vec![http_port(8080)], vec!["db", "redis"]),
             ],
+            health_check_interval_secs: None,
             default_open_service: None,
             proxy_traffic_capture_enabled: None,
             proxy_traffic_capture_mode: None,
@@ -1502,6 +1505,7 @@ mod tests {
             dir: "/repo".to_string(),
             ip: "127.0.0.2".to_string(),
             services: vec![service("api", vec![http_port(8080)], Vec::new())],
+            health_check_interval_secs: None,
             default_open_service: None,
             proxy_traffic_capture_enabled: None,
             proxy_traffic_capture_mode: None,

@@ -8,6 +8,51 @@ use helpers::*;
 mod feature_sections;
 use feature_sections::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SettingsTab {
+    Network,
+    AgentApi,
+    Traffic,
+    Resources,
+    Updates,
+    Support,
+}
+
+impl SettingsTab {
+    fn label(self) -> &'static str {
+        match self {
+            SettingsTab::Network => "network",
+            SettingsTab::AgentApi => "agent api",
+            SettingsTab::Traffic => "traffic",
+            SettingsTab::Resources => "resources",
+            SettingsTab::Updates => "updates",
+            SettingsTab::Support => "support",
+        }
+    }
+
+    fn all() -> [SettingsTab; 6] {
+        [
+            SettingsTab::Network,
+            SettingsTab::AgentApi,
+            SettingsTab::Traffic,
+            SettingsTab::Resources,
+            SettingsTab::Updates,
+            SettingsTab::Support,
+        ]
+    }
+}
+
+fn settings_tab_subtitle(tab: SettingsTab) -> &'static str {
+    match tab {
+        SettingsTab::Network => "Sandbox domain suffix and loopback IP range.",
+        SettingsTab::AgentApi => "Local HTTP API and bearer-token auth for Codex, Claude, Cursor.",
+        SettingsTab::Traffic => "Reverse-proxy capture, retention, and redaction.",
+        SettingsTab::Resources => "Resource sampling cadence, retention, and disk budget.",
+        SettingsTab::Updates => "In-app updates via Sparkle on macOS release builds.",
+        SettingsTab::Support => "Send a support request directly from this Loopbox install.",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::app) fn render_settings_page(
     page: Page,
@@ -15,6 +60,7 @@ pub(in crate::app) fn render_settings_page(
     mut domain_suffix_input: Signal<String>,
     mut range_start_input: Signal<String>,
     mut range_end_input: Signal<String>,
+    mut health_check_interval_input: Signal<String>,
     proxy_capture_default_input: Signal<bool>,
     proxy_capture_mode_input: Signal<ProxyCaptureMode>,
     proxy_capture_text_only_input: Signal<bool>,
@@ -86,16 +132,38 @@ pub(in crate::app) fn render_settings_page(
     let updater_last_checked_label =
         loopbox::updater_last_checked_utc().unwrap_or_else(|| "never".to_string());
 
+    let mut active_tab = use_signal(|| SettingsTab::Network);
+    let tab = active_tab();
+
     rsx! {
         if page == Page::Settings {
-            div { class: "page",
+            div { class: "page settings-page",
                 div { class: "page-header",
                     div { class: "page-header-left",
-                        h1 { class: "page-title", "Settings" }
+                        div { class: "page-header-stack",
+                            span { class: "page-eyebrow", "Configure" }
+                            h1 { class: "page-title", "settings" }
+                            p { class: "page-subtitle",
+                                "{tab.label()} — {settings_tab_subtitle(tab)}"
+                            }
+                        }
+                    }
+                }
+
+                // ── Settings tabs — single-section view, no broken anchors ──
+                div { class: "tab-bar settings-tabs",
+                    for entry in SettingsTab::all() {
+                        button {
+                            key: "{entry.label()}",
+                            class: if entry == tab { "active" } else { "" },
+                            onclick: move |_| active_tab.set(entry),
+                            "{entry.label()}"
+                        }
                     }
                 }
 
                 // ── Network ──────────────────────────────────────
+                if tab == SettingsTab::Network {
                 div { class: "settings-section",
                     div { class: "settings-section-head",
                         span { class: "settings-section-icon", "⊞" }
@@ -133,9 +201,18 @@ pub(in crate::app) fn render_settings_page(
                                     oninput: move |evt| range_end_input.set(evt.value()),
                                 }
                             }
+                            label { class: "field",
+                                span { class: "field-label", "Health Interval" }
+                                input {
+                                    class: "field-input",
+                                    value: "{health_check_interval_input}",
+                                    placeholder: "10",
+                                    oninput: move |evt| health_check_interval_input.set(evt.value()),
+                                }
+                            }
                         }
                         p { class: "settings-hint",
-                            "Sandboxes use IPs {ip_base}{range_start_input}\u{2013}{range_end_input} with the .{domain_suffix_input} TLD."
+                            "Sandboxes use IPs {ip_base}{range_start_input}\u{2013}{range_end_input} with the .{domain_suffix_input} TLD. Health checks default to {health_check_interval_input}s."
                         }
                         div { class: "settings-save-row",
                             button {
@@ -145,13 +222,15 @@ pub(in crate::app) fn render_settings_page(
                                     let suffix = domain_suffix_input();
                                     let start = range_start_input();
                                     let end = range_end_input();
+                                    let health_interval = health_check_interval_input();
 
                                     let result = {
                                         let mut cfg = config.write();
-                                        loopbox::update_global_settings(&mut cfg, &suffix, &start, &end).map(|_| {
+                                        loopbox::update_global_settings(&mut cfg, &suffix, &start, &end, &health_interval).map(|_| {
                                             domain_suffix_input.set(cfg.global.domain_suffix.clone());
                                             range_start_input.set(cfg.global.ip_range_start.to_string());
                                             range_end_input.set(cfg.global.ip_range_end.to_string());
+                                            health_check_interval_input.set(cfg.global.health_check_interval_secs.to_string());
                                         })
                                     };
 
@@ -172,8 +251,10 @@ pub(in crate::app) fn render_settings_page(
                         }
                     }
                 }
+                }
 
                 // ── Agent API ────────────────────────────────────
+                if tab == SettingsTab::AgentApi {
                 div { class: "settings-section",
                     div { class: "settings-section-head",
                         span { class: "settings-section-icon", "⌘" }
@@ -389,8 +470,10 @@ pub(in crate::app) fn render_settings_page(
                         }
                     }
                 }
+                }
 
                 // ── Updates ──────────────────────────────────────
+                if tab == SettingsTab::Updates {
                 div { class: "settings-section",
                     div { class: "settings-section-head",
                         span { class: "settings-section-icon", "⇪" }
@@ -473,8 +556,10 @@ pub(in crate::app) fn render_settings_page(
                         }
                     }
                 }
+                }
 
                 SettingsFeatureSections {
+                    active_tab,
                     proxy_capture_default_input,
                     proxy_capture_mode_input,
                     proxy_capture_text_only_input,

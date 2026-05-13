@@ -8,6 +8,7 @@ use std::time::Duration;
 pub(crate) enum Page {
     Sandboxes,
     NewSandbox,
+    Clusters,
     Agents,
     Runtime,
     Diagnostics,
@@ -188,6 +189,7 @@ impl SetupStatus {
 pub(super) struct ProjectEditForm {
     pub(super) dir: String,
     pub(super) ip: String,
+    pub(super) health_check_interval_secs: String,
     pub(super) services: Vec<ServiceEntry>,
 }
 
@@ -205,6 +207,7 @@ impl ProjectEditForm {
                             port: String::new(),
                             protocol: "http1".to_string(),
                             health_path: String::new(),
+                            health_check_interval_secs: String::new(),
                         }]
                     } else {
                         effective_ports
@@ -223,6 +226,10 @@ impl ProjectEditForm {
                                     }
                                 },
                                 health_path: entry.health_path.clone().unwrap_or_default(),
+                                health_check_interval_secs: entry
+                                    .health_check_interval_secs
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_default(),
                             })
                             .collect()
                     }
@@ -285,6 +292,10 @@ impl ProjectEditForm {
         Self {
             dir: project.dir.clone(),
             ip: project.ip.clone(),
+            health_check_interval_secs: project
+                .health_check_interval_secs
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
             services,
         }
     }

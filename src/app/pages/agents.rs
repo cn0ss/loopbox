@@ -11,6 +11,10 @@ pub(in crate::app) fn render_agents_page(
     mut notice: Signal<Option<Notice>>,
     runtime_tick: Signal<u64>,
 ) -> Element {
+    // ── All hooks first, unconditionally. render_agents_page is a function
+    //    (not a #[component]), so its hooks live in the App scope. Putting any
+    //    hook after an early-return makes the App's hook count vary between
+    //    renders and crashes Dioxus with a "rules of hooks" panic.
     let mut composer = use_signal(String::new);
     let mut composer_diagnosis_session_id = use_signal(|| None::<String>);
     let mut show_events = use_signal(|| false);
@@ -18,6 +22,23 @@ pub(in crate::app) fn render_agents_page(
     let mut last_page_was_agents = use_signal(|| false);
 
     let is_agents_page = page == Page::Agents;
+    let _ = runtime_tick();
+    let snapshot_opt = if is_agents_page {
+        Some(loopbox::codex_agents_snapshot(&config()))
+    } else {
+        None
+    };
+    let should_auto_connect = snapshot_opt
+        .as_ref()
+        .map(|s| s.enabled && !s.running && !s.starting && !auto_connect_attempted())
+        .unwrap_or(false);
+    let prefilled_prompt = snapshot_opt
+        .as_ref()
+        .and_then(|s| s.prefilled_prompt.clone());
+    let prefilled_diagnosis_session_id = snapshot_opt
+        .as_ref()
+        .and_then(|s| s.prefilled_diagnosis_session_id.clone());
+
     use_effect(move || {
         if is_agents_page && !last_page_was_agents() {
             auto_connect_attempted.set(false);
@@ -25,30 +46,31 @@ pub(in crate::app) fn render_agents_page(
         last_page_was_agents.set(is_agents_page);
     });
 
-    if !is_agents_page {
-        return rsx! {};
-    }
-
-    let _ = runtime_tick();
-    let snapshot = loopbox::codex_agents_snapshot(&config());
-    let should_auto_connect =
-        snapshot.enabled && !snapshot.running && !snapshot.starting && !auto_connect_attempted();
     use_effect(move || {
-        if should_auto_connect {
-            auto_connect_attempted.set(true);
-            if let Err(err) = loopbox::codex_agents_start(&config()) {
-                notice.set(Some(Notice::error(err)));
-            }
+        if !is_agents_page || !should_auto_connect {
+            return;
+        }
+        auto_connect_attempted.set(true);
+        if let Err(err) = loopbox::codex_agents_start(&config()) {
+            notice.set(Some(Notice::error(err)));
         }
     });
-    let prefilled_prompt = snapshot.prefilled_prompt.clone();
-    let prefilled_diagnosis_session_id = snapshot.prefilled_diagnosis_session_id.clone();
+
     use_effect(move || {
+        if !is_agents_page {
+            return;
+        }
         if let Some(prompt) = prefilled_prompt.clone() {
             composer.set(prompt);
             composer_diagnosis_session_id.set(prefilled_diagnosis_session_id.clone());
         }
     });
+
+    if !is_agents_page {
+        return rsx! {};
+    }
+
+    let snapshot = snapshot_opt.expect("snapshot computed when is_agents_page");
 
     let composer_value = composer();
     let diagnosis_session_id_snapshot = composer_diagnosis_session_id();
@@ -87,11 +109,11 @@ pub(in crate::app) fn render_agents_page(
         format!("{tool_count} ready")
     };
     let tool_health_class = if tool_count == 0 {
-        "agents-tool-health"
+        "status-badge status-badge--neutral"
     } else if missing_tool_count > 0 {
-        "agents-tool-health is-warn"
+        "status-badge status-badge--warn"
     } else {
-        "agents-tool-health is-ok"
+        "status-badge status-badge--ok"
     };
     let primary_action_icon = if snapshot.running || snapshot.starting {
         "↻"
@@ -126,78 +148,70 @@ pub(in crate::app) fn render_agents_page(
 
     rsx! {
         div { class: "page agents-page",
-            div { class: "agents-commandbar",
-                div { class: "agents-commandbar-main",
-                    div { class: "agents-brand-mark",
-                        CodexGlyph {}
+            div { class: "page-header",
+                div { class: "page-header-left",
+                    div { class: "page-header-stack",
+                        span { class: "page-eyebrow", "Codex" }
+                        h1 { class: "page-title", "agents" }
+                        div { class: "page-meta",
+                            span { class: "page-meta-item",
+                                strong { "Global Loopbox" }
+                            }
+                            span { class: "page-meta-sep", "·" }
+                            span {
+                                class: if snapshot.running { "status-badge status-badge--ok" } else if snapshot.starting { "status-badge status-badge--warn" } else { "status-badge status-badge--neutral" },
+                                "{engine_label}"
+                            }
+                            span { class: "status-badge status-badge--neutral status-badge--count", "{turn_label}" }
+                        }
                     }
-                    h1 { class: "page-title agents-title", "Agents" }
                 }
-                div { class: "agents-status-strip",
-                    span { class: "agents-context-token",
-                        span { class: "agents-inline-icon", "⌘" }
-                        strong { "Global Loopbox" }
-                    }
-                    span {
-                        class: if snapshot.running { "agents-status-token is-ok" } else if snapshot.starting { "agents-status-token is-warn" } else { "agents-status-token" },
-                        "{engine_label}"
-                    }
-                    span { class: "agents-status-token", "{turn_label}" }
-                }
-                details { class: "agents-actions-menu",
-                    summary { class: "btn btn-sm btn-outline agents-menu-trigger",
-                        span { class: "agents-button-icon", "⋯" }
-                        "Actions"
-                    }
-                    div { class: "agents-actions-popover",
-                        button {
-                            class: "agents-menu-item",
-                            onclick: move |_| {
-                                let result = if primary_action_reloads_tools {
-                                    loopbox::codex_agents_reload_tools(&config())
-                                } else {
-                                    loopbox::codex_agents_start(&config())
-                                };
-                                match result {
-                                    Ok(()) if primary_action_reloads_tools => {
-                                        notice.set(Some(Notice::info("Refreshing Codex connection.")))
-                                    }
-                                    Ok(()) => {
-                                        notice.set(Some(Notice::success("Codex app-server started.")))
-                                    }
-                                    Err(err) => notice.set(Some(Notice::error(err))),
+                div { class: "page-actions",
+                    button {
+                        class: "btn btn-sm btn-primary",
+                        onclick: move |_| {
+                            let result = if primary_action_reloads_tools {
+                                loopbox::codex_agents_reload_tools(&config())
+                            } else {
+                                loopbox::codex_agents_start(&config())
+                            };
+                            match result {
+                                Ok(()) if primary_action_reloads_tools => {
+                                    notice.set(Some(Notice::info("Refreshing Codex connection.")))
                                 }
-                            },
-                            span { class: "agents-button-icon", "{primary_action_icon}" }
-                            "{primary_action_label}"
-                        }
-                        button {
-                            class: "agents-menu-item",
-                            onclick: move |_| match loopbox::codex_agents_reload_tools(&config()) {
-                                Ok(()) => notice.set(Some(Notice::info("Reloading Loopbox MCP tools."))),
+                                Ok(()) => {
+                                    notice.set(Some(Notice::success("Codex app-server started.")))
+                                }
                                 Err(err) => notice.set(Some(Notice::error(err))),
-                            },
-                            span { class: "agents-button-icon", "⟳" }
-                            "Reload tools"
-                        }
+                            }
+                        },
+                        "{primary_action_icon}\u{00a0}{primary_action_label}"
+                    }
+                    button {
+                        class: "btn btn-sm btn-outline",
+                        onclick: move |_| match loopbox::codex_agents_reload_tools(&config()) {
+                            Ok(()) => notice.set(Some(Notice::info("Reloading Loopbox MCP tools."))),
+                            Err(err) => notice.set(Some(Notice::error(err))),
+                        },
+                        "Reload"
+                    }
+                    if can_interrupt {
                         button {
-                            class: "agents-menu-item",
-                            disabled: !can_interrupt,
+                            class: "btn btn-sm btn-outline",
                             onclick: move |_| match loopbox::codex_agents_interrupt_turn() {
                                 Ok(()) => notice.set(Some(Notice::info("Interrupt requested."))),
                                 Err(err) => notice.set(Some(Notice::error(err))),
                             },
-                            span { class: "agents-button-icon", "Ⅱ" }
                             "Interrupt"
                         }
+                    }
+                    if snapshot.running {
                         button {
-                            class: "agents-menu-item agents-menu-item-danger",
-                            disabled: !snapshot.running,
+                            class: "btn btn-sm btn-danger",
                             onclick: move |_| match loopbox::codex_agents_stop() {
                                 Ok(()) => notice.set(Some(Notice::info("Codex app-server stopped."))),
                                 Err(err) => notice.set(Some(Notice::error(err))),
                             },
-                            span { class: "agents-button-icon", "■" }
                             "Stop"
                         }
                     }
@@ -246,108 +260,89 @@ pub(in crate::app) fn render_agents_page(
                         }
                     }
 
-                    section { class: "agents-rail-section",
-                        h2 {
-                            span { class: "agents-section-icon", "◈" }
-                            "Session"
-                        }
-                        dl { class: "agents-kv",
-                            div {
-                                dt { "Binary" }
-                                dd { code { "{snapshot.codex_binary}" } }
-                            }
-                            div {
-                                dt { "Scope" }
-                                dd { "Global" }
-                            }
-                            div {
-                                dt { "Model" }
-                                dd { "{model_summary}" }
-                            }
-                            div {
-                                dt { "Account" }
-                                dd { class: "agents-kv-truncate", "{snapshot.auth.label}" }
-                            }
-                        }
-                        if let Some(thread_id) = snapshot.active_thread_id.as_ref() {
-                            div { class: "agents-thread-id",
-                                span { "Thread" }
-                                code { "{thread_id}" }
-                            }
-                        }
-                    }
+                    div { class: "agents-rail-spacer" }
 
-                    section { class: "agents-rail-section",
-                        h2 {
-                            span { class: "agents-section-icon", "◎" }
-                            "Models"
+                    // ── Compact session strip (replaces Session/Models/Diagnostics sections) ──
+                    div { class: "agents-rail-foot",
+                        div { class: "agents-rail-foot-row",
+                            span { class: "agents-rail-foot-label", "model" }
+                            span { class: "agents-rail-foot-value agents-rail-foot-value-strong", "{model_summary}" }
                         }
-                        if snapshot.models.is_empty() {
-                            p { class: "agents-rail-empty", "Unavailable" }
-                        } else {
-                            details { class: "agents-rail-details",
-                                summary {
-                                    span { "{model_count} available" }
-                                    span { class: "agents-chevron", ">" }
+                        div { class: "agents-rail-foot-row",
+                            span { class: "agents-rail-foot-label", "binary" }
+                            code { class: "agents-rail-foot-value", "{snapshot.codex_binary}" }
+                        }
+                        div { class: "agents-rail-foot-row",
+                            span { class: "agents-rail-foot-label", "account" }
+                            span { class: "agents-rail-foot-value agents-rail-foot-truncate",
+                                "{snapshot.auth.label}"
+                            }
+                        }
+                        div { class: "agents-rail-foot-row",
+                            span { class: "agents-rail-foot-label", "tools" }
+                            span { class: "{tool_health_class}", "{tool_health_label}" }
+                        }
+                        if !missing_tool_label.is_empty() {
+                            p { class: "agents-tool-warning agents-rail-foot-warning",
+                                "Missing: {missing_tool_label}"
+                            }
+                        }
+
+                        details { class: "agents-rail-foot-details",
+                            summary {
+                                span { "more" }
+                                span { class: "agents-rail-foot-meta",
+                                    "{model_count} models · {event_count} events · {diagnostics_count} diag"
                                 }
-                                div { class: "agents-model-list",
-                                    for model in snapshot.models.iter() {
-                                        div {
-                                            key: "{model.id}",
-                                            class: if model.is_default { "agents-model-row is-default" } else { "agents-model-row" },
-                                            span { "{model.display_name}" }
-                                            if let Some(effort) = model.default_effort.as_ref() {
-                                                small { "{effort}" }
+                            }
+                            div { class: "agents-rail-foot-grid",
+                                if !snapshot.models.is_empty() {
+                                    div { class: "agents-rail-foot-block",
+                                        span { class: "agents-rail-foot-block-title", "models" }
+                                        div { class: "agents-model-list",
+                                            for model in snapshot.models.iter() {
+                                                div {
+                                                    key: "{model.id}",
+                                                    class: if model.is_default { "agents-model-row is-default" } else { "agents-model-row" },
+                                                    span { "{model.display_name}" }
+                                                    if let Some(effort) = model.default_effort.as_ref() {
+                                                        small { "{effort}" }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
-
-                    section { class: "agents-rail-section",
-                        h2 {
-                            span { class: "agents-section-icon", "∿" }
-                            "Diagnostics"
-                        }
-                        div { class: "{tool_health_class}",
-                            span {
-                                span { class: "agents-section-icon", "ƒ" }
-                                "Loopbox tools"
-                            }
-                            strong { "{tool_health_label}" }
-                        }
-                        if !missing_tool_label.is_empty() {
-                            p { class: "agents-tool-warning",
-                                "Missing: {missing_tool_label}"
-                            }
-                        }
-                        button {
-                            class: "agents-rail-toggle",
-                            onclick: move |_| show_events.set(!show_event_log),
-                            span {
-                                span { class: "agents-section-icon", "≡" }
-                                "Events"
-                            }
-                            span { class: "agents-count-badge", "{event_count}" }
-                        }
-                        if show_event_log {
-                            div { class: "agents-event-log",
-                                for (index, event) in snapshot.event_log.iter().rev().take(40).enumerate() {
-                                    div { key: "{index}", "{event}" }
+                                button {
+                                    class: "agents-rail-foot-block agents-rail-foot-events",
+                                    onclick: move |_| show_events.set(!show_event_log),
+                                    span { class: "agents-rail-foot-block-title", "event log" }
+                                    span { class: "agents-count-badge", "{event_count}" }
                                 }
-                            }
-                        }
-                        if diagnostics_count > 0 {
-                            details { class: "agents-rail-details agents-diagnostics-rail",
-                                summary {
-                                    span { "Process output" }
-                                    span { class: "agents-count-badge", "{diagnostics_count}" }
+                                if show_event_log {
+                                    div { class: "agents-event-log",
+                                        for (index, event) in snapshot.event_log.iter().rev().take(40).enumerate() {
+                                            div { key: "{index}", "{event}" }
+                                        }
+                                    }
                                 }
-                                pre {
-                                    for line in snapshot.stderr_tail.iter() {
-                                        "{line}\n"
+                                if diagnostics_count > 0 {
+                                    details { class: "agents-rail-details agents-diagnostics-rail",
+                                        summary {
+                                            span { "Process output" }
+                                            span { class: "agents-count-badge", "{diagnostics_count}" }
+                                        }
+                                        pre {
+                                            for line in snapshot.stderr_tail.iter() {
+                                                "{line}\n"
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(thread_id) = snapshot.active_thread_id.as_ref() {
+                                    div { class: "agents-rail-foot-block",
+                                        span { class: "agents-rail-foot-block-title", "thread id" }
+                                        code { class: "agents-rail-foot-value", "{thread_id}" }
                                     }
                                 }
                             }
@@ -366,24 +361,87 @@ pub(in crate::app) fn render_agents_page(
                             "Codex needs authentication. Sign in with the Codex CLI, then restart."
                         }
                     }
-                    div { class: "agents-scroll",
+                    div {
+                        class: if transcript_items.is_empty() { "agents-scroll agents-scroll--canvas" } else { "agents-scroll" },
                         if transcript_items.is_empty() {
-                            div { class: "agents-empty",
-                                div { class: "agents-empty-mark",
-                                    span { ">" }
+                            div { class: "agents-canvas",
+                                div { class: "agents-canvas-glyph",
+                                    span { class: "agents-canvas-glyph-mark", "⌁" }
                                 }
-                                h2 { "Ready" }
-                                div { class: "agents-quick-prompts",
+                                span { class: "page-eyebrow agents-canvas-eyebrow", "agent on standby" }
+                                h1 { class: "agents-canvas-verb", "ready" }
+                                p { class: "agents-canvas-lede",
+                                    "Ask anything about your sandboxes, services, logs, traffic, or runtime. The agent is listening."
+                                }
+
+                                div { class: "agents-canvas-prompts",
                                     for prompt in quick_prompts() {
                                         button {
                                             key: "{prompt.label}",
-                                            class: "agents-prompt-chip",
+                                            class: "agents-canvas-prompt",
                                             onclick: {
                                                 let prompt = prompt.prompt.clone();
                                                 move |_| composer.set(prompt.clone())
                                             },
-                                            span { class: "agents-prompt-icon", "{prompt.icon}" }
-                                            "{prompt.label}"
+                                            span { class: "agents-canvas-prompt-mark", "{prompt.icon}" }
+                                            span { class: "agents-canvas-prompt-label", "{prompt.label}" }
+                                        }
+                                    }
+                                }
+
+                                div { class: "agents-composer agents-composer--centered",
+                                    textarea {
+                                        class: "agents-composer-input",
+                                        value: "{composer_value}",
+                                        placeholder: "Tell the agent what to do —",
+                                        oninput: move |evt| composer.set(evt.value()),
+                                        onkeydown: move |evt| {
+                                            if evt.key() == Key::Enter && (evt.modifiers().contains(Modifiers::META) || evt.modifiers().contains(Modifiers::CONTROL)) {
+                                                let text = composer().trim().to_string();
+                                                if text.is_empty() { return; }
+                                                let result = if let Some(session_id) = composer_diagnosis_session_id() {
+                                                    loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
+                                                } else {
+                                                    loopbox::codex_agents_send_message(&config(), None, text)
+                                                };
+                                                match result {
+                                                    Ok(()) => {
+                                                        composer.set(String::new());
+                                                        composer_diagnosis_session_id.set(None);
+                                                    }
+                                                    Err(err) => notice.set(Some(Notice::error(err))),
+                                                }
+                                            }
+                                        },
+                                    }
+                                    div { class: "agents-composer-actions",
+                                        if diagnosis_session_id_snapshot.is_some() {
+                                            span { class: "agents-composer-context", "Diagnosis attached" }
+                                        } else {
+                                            span { class: "agents-composer-hint",
+                                                kbd { "⌘" } kbd { "↵" } " to send"
+                                            }
+                                        }
+                                        button {
+                                            class: "btn btn-primary",
+                                            disabled: !can_send,
+                                            onclick: move |_| {
+                                                let text = composer().trim().to_string();
+                                                if text.is_empty() { return; }
+                                                let result = if let Some(session_id) = composer_diagnosis_session_id() {
+                                                    loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
+                                                } else {
+                                                    loopbox::codex_agents_send_message(&config(), None, text)
+                                                };
+                                                match result {
+                                                    Ok(()) => {
+                                                        composer.set(String::new());
+                                                        composer_diagnosis_session_id.set(None);
+                                                    }
+                                                    Err(err) => notice.set(Some(Notice::error(err))),
+                                                }
+                                            },
+                                            "Send"
                                         }
                                     }
                                 }
@@ -421,7 +479,10 @@ pub(in crate::app) fn render_agents_page(
                                             } else if item.body_mono {
                                                 pre { class: "agents-message-text agents-message-text-mono", "{item.text}" }
                                             } else {
-                                                div { class: "agents-message-text", "{item.text}" }
+                                                div {
+                                                    class: "agents-message-text agents-message-markdown",
+                                                    dangerous_inner_html: "{render_markdown(&item.text)}",
+                                                }
                                             }
                                         }
                                     }
@@ -452,62 +513,65 @@ pub(in crate::app) fn render_agents_page(
                         }
                     }
 
-                    div { class: "agents-composer",
-                        textarea {
-                            class: "agents-composer-input",
-                            value: "{composer_value}",
-                            placeholder: "Ask about sandboxes, logs, traffic, or runtime...",
-                            oninput: move |evt| composer.set(evt.value()),
-                            onkeydown: move |evt| {
-                                if evt.key() == Key::Enter && (evt.modifiers().contains(Modifiers::META) || evt.modifiers().contains(Modifiers::CONTROL)) {
-                                    let text = composer().trim().to_string();
-                                    if text.is_empty() {
-                                        return;
-                                    }
-                                    let result = if let Some(session_id) = composer_diagnosis_session_id() {
-                                        loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
-                                    } else {
-                                        loopbox::codex_agents_send_message(&config(), None, text)
-                                    };
-                                    match result {
-                                        Ok(()) => {
-                                            composer.set(String::new());
-                                            composer_diagnosis_session_id.set(None);
+                    if !transcript_items.is_empty() {
+                        div { class: "agents-composer",
+                            textarea {
+                                class: "agents-composer-input",
+                                value: "{composer_value}",
+                                placeholder: "Reply or ask the next thing —",
+                                oninput: move |evt| composer.set(evt.value()),
+                                onkeydown: move |evt| {
+                                    if evt.key() == Key::Enter && (evt.modifiers().contains(Modifiers::META) || evt.modifiers().contains(Modifiers::CONTROL)) {
+                                        let text = composer().trim().to_string();
+                                        if text.is_empty() {
+                                            return;
                                         }
-                                        Err(err) => notice.set(Some(Notice::error(err))),
-                                    }
-                                }
-                            },
-                        }
-                        div { class: "agents-composer-actions",
-                            if diagnosis_session_id_snapshot.is_some() {
-                                span { class: "agents-composer-context", "Diagnosis" }
-                            } else {
-                                span { "Cmd/Ctrl Enter" }
-                            }
-                            button {
-                                class: "btn btn-primary",
-                                disabled: !can_send,
-                                onclick: move |_| {
-                                    let text = composer().trim().to_string();
-                                    if text.is_empty() {
-                                        return;
-                                    }
-                                    let result = if let Some(session_id) = composer_diagnosis_session_id() {
-                                        loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
-                                    } else {
-                                        loopbox::codex_agents_send_message(&config(), None, text)
-                                    };
-                                    match result {
-                                        Ok(()) => {
-                                            composer.set(String::new());
-                                            composer_diagnosis_session_id.set(None);
+                                        let result = if let Some(session_id) = composer_diagnosis_session_id() {
+                                            loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
+                                        } else {
+                                            loopbox::codex_agents_send_message(&config(), None, text)
+                                        };
+                                        match result {
+                                            Ok(()) => {
+                                                composer.set(String::new());
+                                                composer_diagnosis_session_id.set(None);
+                                            }
+                                            Err(err) => notice.set(Some(Notice::error(err))),
                                         }
-                                        Err(err) => notice.set(Some(Notice::error(err))),
                                     }
                                 },
-                                span { class: "agents-button-icon", "↵" }
-                                "Send"
+                            }
+                            div { class: "agents-composer-actions",
+                                if diagnosis_session_id_snapshot.is_some() {
+                                    span { class: "agents-composer-context", "Diagnosis attached" }
+                                } else {
+                                    span { class: "agents-composer-hint",
+                                        kbd { "⌘" } kbd { "↵" } " to send"
+                                    }
+                                }
+                                button {
+                                    class: "btn btn-primary",
+                                    disabled: !can_send,
+                                    onclick: move |_| {
+                                        let text = composer().trim().to_string();
+                                        if text.is_empty() {
+                                            return;
+                                        }
+                                        let result = if let Some(session_id) = composer_diagnosis_session_id() {
+                                            loopbox::codex_agents_send_diagnosis_message(&config(), session_id, text)
+                                        } else {
+                                            loopbox::codex_agents_send_message(&config(), None, text)
+                                        };
+                                        match result {
+                                            Ok(()) => {
+                                                composer.set(String::new());
+                                                composer_diagnosis_session_id.set(None);
+                                            }
+                                            Err(err) => notice.set(Some(Notice::error(err))),
+                                        }
+                                    },
+                                    "Send"
+                                }
                             }
                         }
                     }
@@ -584,6 +648,27 @@ struct QuickPrompt {
     label: String,
     prompt: String,
     icon: String,
+}
+
+/// Render markdown content from the Codex agent as HTML.
+///
+/// Uses pulldown-cmark in CommonMark mode with GFM-style tables/strikethrough.
+/// Output is fed to `dangerous_inner_html`. The parser escapes user content
+/// by default; the agent output is local-only and not user-controlled, so
+/// the residual XSS surface is acceptable.
+fn render_markdown(text: &str) -> String {
+    use pulldown_cmark::{html, Options, Parser};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_SMART_PUNCTUATION);
+
+    let parser = Parser::new_ext(text, options);
+    let mut out = String::with_capacity(text.len() + text.len() / 4);
+    html::push_html(&mut out, parser);
+    out
 }
 
 fn quick_prompts() -> Vec<QuickPrompt> {

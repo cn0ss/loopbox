@@ -1,0 +1,421 @@
+/* ════════════════════════════════════════════
+   RESPONSIVE — NARROW WINDOWS
+   Breakpoints are viewport (window) widths.
+   Content area = viewport - sidebar(200) - padding(80) = viewport - 280.
+   ════════════════════════════════════════════ */
+
+/* ── ≤ 860px window ── */
+@media (max-width: 860px) {
+    .main-area {
+        padding: 0 20px 40px;
+    }
+
+    /* Tab bar: scrollable instead of overflowing */
+    .tab-bar {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    .tab-bar::-webkit-scrollbar { display: none; }
+
+    /* Service toolbar: allow wrapping */
+    .svc-toolbar {
+        flex-wrap: wrap;
+    }
+
+    .runtime-header-tools,
+    .runtime-search-input {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .runtime-table-head,
+    .runtime-command-row {
+        min-width: 980px;
+        grid-template-columns: 130px 106px 130px 210px 150px 254px;
+    }
+
+    /* Settings: 2 columns instead of 3 */
+    .settings-fields-3 {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    /* Traffic list pane: compact row at narrower widths */
+    .traffic-row {
+        grid-template-columns: 46px minmax(0, 1fr) 42px 50px;
+        gap: 4px;
+        padding: 6px 8px;
+    }
+
+    /* Traffic detail meta: tighter */
+    .traffic-detail-meta {
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    }
+}
+
+/* ── ≤ 720px window ── */
+@media (max-width: 720px) {
+    :root {
+        --sidebar-w: 160px;
+    }
+
+    .main-area {
+        padding: 0 14px 30px;
+    }
+
+    /* Traffic: stack list above detail on narrow windows */
+    .tab-content-traffic {
+        height: auto;
+    }
+
+    .traffic-split {
+        flex-direction: column;
+        border-radius: var(--radius);
+    }
+
+    .traffic-list-pane {
+        width: 100%;
+        min-width: 0;
+        max-height: 220px;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .traffic-detail-pane {
+        flex: unset;
+        min-height: 200px;
+    }
+
+    .tab-content-timeline {
+        height: auto;
+    }
+
+    .timeline-split {
+        flex-direction: column;
+    }
+
+    .timeline-list-pane {
+        width: 100%;
+        min-width: 0;
+        max-height: 260px;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .timeline-detail-pane {
+        flex: unset;
+        min-height: 220px;
+    }
+
+    .topology-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .topology-detail {
+        order: 2;
+    }
+
+    .topology-map-shell {
+        max-height: 520px;
+    }
+
+    .timeline-detail-header {
+        flex-wrap: wrap;
+    }
+
+    .timeline-detail-title {
+        flex-basis: 100%;
+        order: 2;
+    }
+
+    .traffic-row {
+        grid-template-columns: 46px minmax(0, 1fr) 42px 52px;
+    }
+
+    /* Project grid: 1 column */
+    .project-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* Settings: 1 column */
+    .settings-fields-3,
+    .settings-fields-2 {
+        grid-template-columns: 1fr;
+    }
+
+    /* Settings sections: tighter padding */
+    .settings-section-head {
+        padding: 12px 16px;
+    }
+
+    .settings-section-body {
+        padding: 16px;
+        gap: 14px;
+    }
+
+    /* Settings toggles: stack label above control */
+    .settings-toggle-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
+    /* Segment control: stretch full width, buttons share space evenly */
+    .seg-control {
+        display: flex;
+        width: 100%;
+    }
+
+    .seg-btn {
+        flex: 1;
+        text-align: center;
+        justify-content: center;
+    }
+
+    /* Two-column form grids → 1 column */
+    .field-grid,
+    .service-edit-grid,
+    .wizard-review-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .wizard-blueprint-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .launch-header,
+    .launch-url-card,
+    .launch-footer-actions {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .launch-url-actions,
+    .launch-footer-actions {
+        width: 100%;
+    }
+
+    /* Port rows: 2-column on medium widths */
+    .service-port-row {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    /* Port row remove button: span last 2 cols aren't needed, just float */
+    .service-port-row .btn {
+        grid-column: span 1;
+    }
+
+    /* Danger zone row: allow wrap */
+    .danger-zone-row {
+        flex-wrap: wrap;
+    }
+
+    /* Env merged row: drop fixed key width */
+    .env-merged-row {
+        grid-template-columns: 1fr 1fr auto auto;
+    }
+
+    /* Detail header: allow wrapping */
+    .detail-header {
+        flex-wrap: wrap;
+    }
+    .detail-header-left {
+        flex-wrap: wrap;
+    }
+
+    .runtime-project-header {
+        flex-direction: column;
+        gap: 10px;
+    }
+    .runtime-project-header .panel-actions {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    /* Sidebar brand: smaller */
+    .sidebar-brand {
+        padding: 0 12px;
+    }
+    .brand-name {
+        font-size: 13px;
+    }
+    .nav-link {
+        padding: 7px 10px;
+        font-size: 12px;
+    }
+
+    /* Page title: smaller */
+    .page-title {
+        font-size: 18px;
+    }
+
+    /* Traffic detail: fewer meta columns */
+    .traffic-detail-meta {
+        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    }
+}
+
+/* ── ≤ 580px window ── */
+@media (max-width: 580px) {
+    :root {
+        --sidebar-w: 0px;
+    }
+
+    /* Sidebar hidden — too narrow to show */
+    .sidebar {
+        display: none;
+    }
+
+    .main-area {
+        margin-left: 0;
+        padding: 0 12px 24px;
+    }
+
+    .notice {
+        left: 12px;
+        right: 12px;
+        max-width: none;
+    }
+
+    /* Settings: minimal padding at phone widths */
+    .settings-section-head {
+        padding: 10px 12px;
+        gap: 10px;
+    }
+
+    .settings-section-body {
+        padding: 12px;
+        gap: 12px;
+    }
+
+    /* Section icon: hide on very narrow, reclaim width */
+    .settings-section-icon {
+        display: none;
+    }
+
+    /* Toggle pill: left-align and make tap target taller */
+    .toggle-pill {
+        padding: 7px 14px;
+    }
+
+    /* Traffic: drop duration on very narrow */
+    .traffic-row {
+        grid-template-columns: 46px minmax(0, 1fr) 42px;
+    }
+    .traffic-row .traffic-dur { display: none; }
+
+    .timeline-toolbar-row {
+        align-items: stretch;
+    }
+
+    .timeline-filter-group,
+    .timeline-filter-pills {
+        width: 100%;
+    }
+
+    .topology-toolbar {
+        align-items: stretch;
+    }
+
+    .topology-toolbar-left,
+    .topology-toolbar-right {
+        width: 100%;
+    }
+
+    .topology-toggle,
+    .topology-toolbar-right .btn {
+        flex: 1;
+        justify-content: center;
+        text-align: center;
+    }
+
+    .topology-detail-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .timeline-row {
+        grid-template-columns: 10px minmax(0, 1fr);
+    }
+
+    .timeline-row-severity {
+        display: none;
+    }
+
+    /* Traffic detail meta: 2 columns max */
+    .traffic-detail-meta {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    /* Wizard steps: wrap */
+    .wizard-steps {
+        flex-wrap: wrap;
+    }
+
+    .wizard-detected-head,
+    .wizard-service-mode-banner,
+    .wizard-footer-split {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    /* Tab bar items: smaller */
+    .tab-bar button {
+        padding: 10px 10px;
+        font-size: 11px;
+    }
+
+    /* Port rows: full stack on narrow */
+    .service-port-row {
+        grid-template-columns: 1fr;
+    }
+
+    /* Danger zone: stack button below text */
+    .danger-zone-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+/* ── ≥ 1400px window — large screens ── */
+@media (min-width: 1400px) {
+    .main-area {
+        padding: 0 56px 60px;
+    }
+
+    /* Settings: more columns on large screens */
+    .settings-fields-2 {
+        grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .settings-fields-3 {
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+    }
+
+    /* Traffic list: cap width so detail pane gets more space */
+    .traffic-list-pane {
+        width: 30%;
+        max-width: 480px;
+    }
+
+    .timeline-list-pane {
+        width: 34%;
+        max-width: 520px;
+    }
+}
+
+/* ── ≥ 1800px window — extra large screens ── */
+@media (min-width: 1800px) {
+    .main-area {
+        padding: 0 72px 60px;
+    }
+
+    .settings-fields-2 {
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+    }
+
+    .settings-fields-3 {
+        grid-template-columns: repeat(6, 1fr);
+    }
+}
+

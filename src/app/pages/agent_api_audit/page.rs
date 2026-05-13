@@ -11,7 +11,41 @@ pub(super) fn AgentApiAuditPage(
 ) -> Element {
     let _tick = runtime_tick();
     let mut selected_event_key = use_signal(|| None::<String>);
-    let events = crate::loopbox::agent_api_audit_events(500).unwrap_or_default();
+    let mut search_input = use_signal(String::new);
+    let mut status_filter = use_signal(|| AgentApiStatusFilter::All);
+    let raw_events = crate::loopbox::agent_api_audit_events(500).unwrap_or_default();
+    let total_count = raw_events.len();
+    let ok_count = raw_events.iter().filter(|e| e.status_code < 400).count();
+    let warn_count = raw_events
+        .iter()
+        .filter(|e| (400..500).contains(&e.status_code))
+        .count();
+    let err_count = raw_events.iter().filter(|e| e.status_code >= 500).count();
+
+    let search = search_input();
+    let search_trimmed = search.trim().to_ascii_lowercase();
+    let filter = status_filter();
+    let events: Vec<_> = raw_events
+        .iter()
+        .filter(|event| {
+            let pass_status = match filter {
+                AgentApiStatusFilter::All => true,
+                AgentApiStatusFilter::Ok => event.status_code < 400,
+                AgentApiStatusFilter::Client => (400..500).contains(&event.status_code),
+                AgentApiStatusFilter::Server => event.status_code >= 500,
+            };
+            if !pass_status {
+                return false;
+            }
+            if search_trimmed.is_empty() {
+                return true;
+            }
+            event.method.to_ascii_lowercase().contains(&search_trimmed)
+                || event.path.to_ascii_lowercase().contains(&search_trimmed)
+                || event.status_code.to_string().contains(&search_trimmed)
+        })
+        .cloned()
+        .collect();
     let selected_event = selected_event_key()
         .and_then(|selected_key| {
             events
@@ -25,10 +59,27 @@ pub(super) fn AgentApiAuditPage(
         div { class: "page",
             div { class: "page-header",
                 div { class: "page-header-left",
-                    h1 { class: "page-title", "Agent API Audit" }
-                    p { class: "text-dim", "All local Agent API request/response records, including headers and bodies." }
+                    div { class: "page-header-stack",
+                        span { class: "page-eyebrow", "Inspect" }
+                        h1 { class: "page-title", "agent api audit" }
+                        div { class: "page-meta",
+                            span { class: "page-meta-item",
+                                "total" strong { "\u{00a0}{total_count}" }
+                            }
+                            span { class: "page-meta-sep", "·" }
+                            span { class: "status-badge status-badge--ok status-badge--count",
+                                "{ok_count} ok"
+                            }
+                            span { class: "status-badge status-badge--warn status-badge--count",
+                                "{warn_count} 4xx"
+                            }
+                            span { class: "status-badge status-badge--error status-badge--count",
+                                "{err_count} 5xx"
+                            }
+                        }
+                    }
                 }
-                div { class: "panel-actions",
+                div { class: "page-actions",
                     button {
                         class: "btn btn-sm btn-outline",
                         onclick: move |_| {
@@ -37,7 +88,8 @@ pub(super) fn AgentApiAuditPage(
                         "Refresh"
                     }
                     button {
-                        class: "btn btn-sm btn-outline",
+                        class: "btn btn-sm btn-danger",
+                        disabled: total_count == 0,
                         onclick: move |_| {
                             match crate::loopbox::clear_agent_api_audit_events() {
                                 Ok(removed) => {
@@ -55,46 +107,82 @@ pub(super) fn AgentApiAuditPage(
                 }
             }
 
-            if events.is_empty() {
-                div { class: "panel",
-                    p { "No Agent API requests captured yet." }
-                    p { class: "text-dim", "Use the local Agent API and click Refresh." }
+            if total_count == 0 {
+                div { class: "empty-state",
+                    span { class: "empty-state-icon", "⌘" }
+                    h2 { class: "empty-state-title", "no agent api requests" }
+                    p { class: "empty-state-desc",
+                        "Once an agent (Codex, Claude, Cursor, …) hits the local Agent API, every request and response will appear here with full headers and bodies."
+                    }
                 }
             } else {
-                div { class: "traffic-split",
-                    div { class: "traffic-list-pane",
-                        div { class: "traffic-list-header",
-                            span { class: "traffic-list-count", "{events.len()} requests" }
-                        }
-                        for event in &events {
+                div { class: "split-layout",
+                    aside { class: "split-pane split-pane-list",
+                        div { class: "split-pane-list-header",
                             div {
-                                key: "agent-api-audit-{event.id}-{event.started_at_unix_ms}",
-                                class: if selected_event_key()
-                                    == Some(format!("{}-{}", event.id, event.started_at_unix_ms)) {
-                                    "traffic-row traffic-row-selected"
-                                } else {
-                                    "traffic-row"
-                                },
-                                onclick: {
-                                    let event_key =
-                                        format!("{}-{}", event.id, event.started_at_unix_ms);
-                                    move |_| selected_event_key.set(Some(event_key.clone()))
-                                },
-                                span {
-                                    class: format!("traffic-method {}", agent_api_method_class(&event.method)),
-                                    "{event.method}"
+                                style: "display:flex; flex-direction:column; gap:10px; width:100%;",
+                                div {
+                                    style: "display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%;",
+                                    span { class: "split-pane-list-header-title",
+                                        "{events.len()} of {total_count}"
+                                    }
+                                    div {
+                                        style: "display:flex; gap:4px;",
+                                        for option in [AgentApiStatusFilter::All, AgentApiStatusFilter::Ok, AgentApiStatusFilter::Client, AgentApiStatusFilter::Server] {
+                                            button {
+                                                key: "{option.label()}",
+                                                class: if option == filter { "agent-api-chip is-active" } else { "agent-api-chip" },
+                                                onclick: move |_| status_filter.set(option),
+                                                "{option.label()}"
+                                            }
+                                        }
+                                    }
                                 }
-                                span { class: "traffic-path", "{event.path}" }
-                                span {
-                                    class: format!("traffic-status-code {}", agent_api_status_class(event.status_code)),
-                                    "{event.status_code}"
+                                input {
+                                    class: "agent-api-search",
+                                    r#type: "text",
+                                    value: "{search}",
+                                    placeholder: "Filter method, path, status…",
+                                    oninput: move |evt| search_input.set(evt.value()),
                                 }
-                                span { class: "traffic-dur", "{event.duration_ms}ms" }
+                            }
+                        }
+                        div { class: "split-pane-list-body",
+                            if events.is_empty() {
+                                div { class: "split-pane-detail--empty",
+                                    "No requests match the current filter."
+                                }
+                            }
+                            for event in &events {
+                                div {
+                                    key: "agent-api-audit-{event.id}-{event.started_at_unix_ms}",
+                                    class: if selected_event_key()
+                                        == Some(format!("{}-{}", event.id, event.started_at_unix_ms)) {
+                                        "traffic-row traffic-row-selected"
+                                    } else {
+                                        "traffic-row"
+                                    },
+                                    onclick: {
+                                        let event_key =
+                                            format!("{}-{}", event.id, event.started_at_unix_ms);
+                                        move |_| selected_event_key.set(Some(event_key.clone()))
+                                    },
+                                    span {
+                                        class: format!("traffic-method {}", agent_api_method_class(&event.method)),
+                                        "{event.method}"
+                                    }
+                                    span { class: "traffic-path", "{event.path}" }
+                                    span {
+                                        class: format!("traffic-status-code {}", agent_api_status_class(event.status_code)),
+                                        "{event.status_code}"
+                                    }
+                                    span { class: "traffic-dur", "{event.duration_ms}ms" }
+                                }
                             }
                         }
                     }
 
-                    div { class: "traffic-detail-pane",
+                    section { class: "split-pane split-pane-detail",
                         if let Some(event) = selected_event {
                             div { class: "traffic-detail-header",
                                 span {
@@ -229,11 +317,32 @@ pub(super) fn AgentApiAuditPage(
                                 }
                             }
                         } else {
-                            div { class: "traffic-detail-empty", "Select a request to inspect." }
+                            div { class: "split-pane-detail--empty",
+                                "Select a request to inspect its headers and body."
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentApiStatusFilter {
+    All,
+    Ok,
+    Client,
+    Server,
+}
+
+impl AgentApiStatusFilter {
+    fn label(self) -> &'static str {
+        match self {
+            AgentApiStatusFilter::All => "all",
+            AgentApiStatusFilter::Ok => "ok",
+            AgentApiStatusFilter::Client => "4xx",
+            AgentApiStatusFilter::Server => "5xx",
         }
     }
 }

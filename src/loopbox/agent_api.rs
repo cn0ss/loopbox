@@ -1,15 +1,22 @@
 use super::{
     add_project, app_version_label, apply_system_setup, clear_reverse_proxy_sidecar_status,
-    config_path, doctor_report, effective_reverse_proxy_status, incident_timeline_for_project,
-    load_config, project_primary_host, project_proxy_traffic_capture_mode,
-    project_proxy_traffic_enabled, proxy_traffic_events_for_project_with_persisted,
-    record_reverse_proxy_sidecar_status, resource_metrics_latest_for_config,
-    resource_metrics_series_for_project, restart_service, save_config, send_service_input,
-    service_input_attached, service_log_attached, service_logs_tail, service_ports,
-    service_runtime_status, service_terminal_attached, start_project_all, start_service,
+    cluster_snapshot_for_namespace, cluster_summaries, config_path, discover_kubernetes_clusters,
+    doctor_report, effective_reverse_proxy_status, import_kubernetes_clusters,
+    incident_timeline_for_project, load_config, project_primary_host,
+    project_proxy_traffic_capture_mode, project_proxy_traffic_enabled,
+    proxy_traffic_events_for_project_with_persisted, record_reverse_proxy_sidecar_status,
+    resource_metrics_latest_for_config, resource_metrics_series_for_project, restart_service,
+    save_config, send_service_input, service_input_attached, service_log_attached,
+    service_logs_tail, service_ports, service_runtime_status, service_terminal_attached,
+    start_cluster_wireguard, start_project_all, start_service, stop_cluster_wireguard,
     stop_project_all, stop_service, sync_resource_metrics_sampler, sync_reverse_proxy,
     update_project, AddProjectInput, AgentApiAuditEvent, AgentApiSettings, ContainerServiceConfig,
-    DoctorFixAction, DoctorIssue, DoctorLevel, IncidentTimelineEvent, LoopboxConfig, OpenTarget,
+    DoctorFixAction, DoctorIssue, DoctorLevel, IncidentTimelineEvent, KubernetesClusterDiscovery,
+    KubernetesClusterImport, KubernetesClusterSnapshot, KubernetesConnectivityState,
+    KubernetesEndpointSliceSnapshot, KubernetesEventSnapshot, KubernetesIngressSnapshot,
+    KubernetesNamespaceSnapshot, KubernetesNodeSnapshot, KubernetesPodSnapshot, KubernetesProvider,
+    KubernetesServiceSnapshot, KubernetesTopologyEdge, KubernetesTopologyNode,
+    KubernetesTopologySnapshot, KubernetesWorkloadSnapshot, LoopboxConfig, OpenTarget,
     ProjectConfig, ProxyCaptureMode, ProxyEndpointProtocol, ReverseProxyStatus, ServiceConfig,
     ServiceEntry, ServicePortEntry, ServiceResourceSample, ServiceRuntimeKind,
     ServiceRuntimeSnapshot, ServiceRuntimeState, UpdateProjectInput,
@@ -218,6 +225,194 @@ struct ProjectSummary {
     status: RuntimeCounts,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ClustersResponse {
+    clusters: Vec<KubernetesClusterDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClusterDiscoveryResponse {
+    clusters: Vec<KubernetesClusterDiscoveryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesClusterDiscoveryDto {
+    name: String,
+    provider: String,
+    kubeconfig_path: Option<String>,
+    context: String,
+    default_namespace: String,
+    already_configured: bool,
+    reachable: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ClusterImportRequest {
+    clusters: Vec<KubernetesClusterImport>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ClusterDetailQuery {
+    namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClusterImportResponse {
+    imported: usize,
+    saved_config_path: String,
+    clusters: Vec<KubernetesClusterDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClusterMutationResponse {
+    cluster: String,
+    action: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesClusterDto {
+    name: String,
+    provider: String,
+    context: String,
+    default_namespace: String,
+    selected_namespace: String,
+    connectivity: String,
+    namespaces: Vec<KubernetesNamespaceDto>,
+    workloads: Vec<KubernetesWorkloadDto>,
+    services: Vec<KubernetesServiceDto>,
+    nodes: Vec<KubernetesNodeDto>,
+    pods: Vec<KubernetesPodDto>,
+    ingresses: Vec<KubernetesIngressDto>,
+    endpoint_slices: Vec<KubernetesEndpointSliceDto>,
+    events: Vec<KubernetesEventDto>,
+    topology: KubernetesTopologyDto,
+    warnings: Vec<String>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesNamespaceDto {
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesWorkloadDto {
+    kind: String,
+    name: String,
+    namespace: String,
+    desired_replicas: Option<u64>,
+    ready_replicas: Option<u64>,
+    available_replicas: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesServiceDto {
+    name: String,
+    namespace: String,
+    service_type: String,
+    cluster_ip: Option<String>,
+    ports: Vec<String>,
+    selector: Vec<String>,
+    external_ips: Vec<String>,
+    endpoint_count: u64,
+    target_pods: Vec<String>,
+    ingress_routes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesNodeDto {
+    name: String,
+    ready: bool,
+    roles: Vec<String>,
+    kubernetes_version: Option<String>,
+    internal_ip: Option<String>,
+    external_ip: Option<String>,
+    allocatable_cpu: Option<String>,
+    allocatable_memory: Option<String>,
+    allocatable_pods: Option<String>,
+    taints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesPodDto {
+    name: String,
+    namespace: String,
+    phase: String,
+    ready_containers: u64,
+    total_containers: u64,
+    restart_count: u64,
+    owner_kind: Option<String>,
+    owner_name: Option<String>,
+    node_name: Option<String>,
+    pod_ip: Option<String>,
+    images: Vec<String>,
+    labels: Vec<String>,
+    warning_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesIngressDto {
+    name: String,
+    namespace: String,
+    class_name: Option<String>,
+    hosts: Vec<String>,
+    service_backends: Vec<String>,
+    tls_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesEndpointSliceDto {
+    name: String,
+    namespace: String,
+    service_name: Option<String>,
+    ready_endpoints: u64,
+    total_endpoints: u64,
+    addresses: Vec<String>,
+    target_pods: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesEventDto {
+    namespace: String,
+    involved_kind: String,
+    involved_name: String,
+    event_type: String,
+    reason: String,
+    message: String,
+    count: u64,
+    first_timestamp: Option<String>,
+    last_timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesTopologyDto {
+    nodes: Vec<KubernetesTopologyNodeDto>,
+    edges: Vec<KubernetesTopologyEdgeDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesTopologyNodeDto {
+    id: String,
+    kind: String,
+    label: String,
+    subtitle: String,
+    status: String,
+    badges: Vec<String>,
+    column: usize,
+    row: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct KubernetesTopologyEdgeDto {
+    from: String,
+    to: String,
+    kind: String,
+    label: String,
+    status: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 struct RuntimeCounts {
     running: usize,
@@ -342,6 +537,8 @@ struct ProjectCreateRequest {
     #[serde(default)]
     ip: String,
     #[serde(default)]
+    health_check_interval_secs: Option<u64>,
+    #[serde(default)]
     services: Vec<ProjectServiceRequest>,
 }
 
@@ -350,6 +547,8 @@ struct ProjectUpdateRequest {
     dir: String,
     #[serde(default)]
     ip: String,
+    #[serde(default)]
+    health_check_interval_secs: Option<u64>,
     #[serde(default)]
     services: Vec<ProjectServiceRequest>,
 }
@@ -388,6 +587,8 @@ struct ProjectServicePortRequest {
     protocol: Option<ProxyEndpointProtocol>,
     #[serde(default)]
     health_path: Option<String>,
+    #[serde(default)]
+    health_check_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -598,11 +799,23 @@ Recommended agent workflow:\n\
 12) Service control: POST /v1/projects/{{project}}/services/{{service}}/start | /stop | /restart | /input\n\n\
 Agent behavior:\n\
 - Prefer Loopbox-managed hostnames and Loopbox config over guessing ports.\n\
+- Before changing local app config, read the Loopbox project detail and preserve existing service names, ports, workdirs, protocols, env files, and autostart settings.\n\
+- When asked to move/register a project in Loopbox, do not add or hardcode dev-server host/port flags in app scripts or env files. Avoid `--host`, `--port`, `--strictPort`, `HOST`, `PORT`, `VITE_*`, `0.0.0.0`, or a sandbox IP unless the user explicitly asks for that exact app-level change. Loopbox owns service bind IP/port injection for supported dev servers.\n\
+- Do not create Vite fallback-port handling or broad development CORS allowlists for Loopbox. Configure CORS and external redirect/callback URLs from the stable Loopbox service hostnames returned by the project API.\n\
+- Keep app commands minimal, for example `npm run dev`, and put runtime port/protocol/workdir changes in the Loopbox project config through the Agent API.\n\
+- Configure health probe cadence in Loopbox config, not in app commands: global `health_check_interval_secs` defaults to 10 seconds, projects can override it, and individual service ports can override it.\n\
+- Do not start, stop, restart, or rebind services unless the user explicitly asks. Inspect config, doctor, runtime, incidents, logs, and requests first.\n\
 - Prefer project/runtime and incident timeline inspection before reading raw logs, requests, or resources.\n\
 - Use runtime input only when a service reports input_attached=true; terminal_attached is UI-only in v1 and terminal frames are not exposed over this API.\n\
 - Use the OpenAPI document for exact schemas and endpoint details.\n\
 - Remember that request capture may be empty or disabled depending on local settings.\n\
 - There is currently no delete project endpoint; avoid assuming one exists.\n\n\
+Project onboarding checklist:\n\
+1) Read discovery_file, OpenAPI, doctor, projects, and the specific project detail before edits.\n\
+2) If the project is already registered, update it instead of creating a duplicate.\n\
+3) Use the project's existing service ports as the intended app ports; do not invent alternate ports to avoid conflicts.\n\
+4) Use service hostnames such as `frontend.<project>.localhost` and `backend.<project>.localhost` for local app URLs, CORS origins, and OAuth/Bexio/WorkOS redirect URLs.\n\
+5) After any config mutation, save through the Agent API and re-read project detail/doctor to verify the persisted config.\n\n\
 Persistence for future agents:\n\
 Add or update a short \"Loopbox Agent API\" section in AGENTS.md or CLAUDE.md with:\n\
 - what Loopbox is: local sandbox control + zero-conflict loopback networking\n\
@@ -610,6 +823,8 @@ Add or update a short \"Loopbox Agent API\" section in AGENTS.md or CLAUDE.md wi
 - base_url\n\
 - openapi_url\n\
 - auth mode and token path (if enabled)\n\
+- hard rules: do not hardcode `--host`, `--port`, `--strictPort`, fallback Vite ports, broad dev CORS, `0.0.0.0`, or sandbox IPs in app config unless the user explicitly asks\n\
+- health checks: use Loopbox `health_check_interval_secs` globally, per project, or per service port; do not infer cadence from the UI polling interval\n\
 - the core workflow: health -> meta -> doctor -> projects -> project detail -> runtime -> incidents -> logs/requests/input only when needed"
     )
 }
@@ -1141,6 +1356,10 @@ fn project_create_request_to_input(request: ProjectCreateRequest) -> AddProjectI
         name: request.name,
         dir: request.dir,
         ip: request.ip,
+        health_check_interval_secs: request
+            .health_check_interval_secs
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
         services: request
             .services
             .into_iter()
@@ -1153,6 +1372,10 @@ fn project_update_request_to_input(request: ProjectUpdateRequest) -> UpdateProje
     UpdateProjectInput {
         dir: request.dir,
         ip: request.ip,
+        health_check_interval_secs: request
+            .health_check_interval_secs
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
         services: request
             .services
             .into_iter()
@@ -1170,6 +1393,10 @@ fn project_service_request_to_entry(request: ProjectServiceRequest) -> ServiceEn
             port: port.port.to_string(),
             protocol: proxy_endpoint_protocol_label(&protocol).to_string(),
             health_path: port.health_path.unwrap_or_default(),
+            health_check_interval_secs: port
+                .health_check_interval_secs
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
         });
     }
 
@@ -1179,6 +1406,7 @@ fn project_service_request_to_entry(request: ProjectServiceRequest) -> ServiceEn
                 port: port.to_string(),
                 protocol: proxy_endpoint_protocol_label(&default_protocol).to_string(),
                 health_path: request.health_path.clone().unwrap_or_default(),
+                health_check_interval_secs: String::new(),
             });
         }
     }
@@ -1249,6 +1477,238 @@ fn service_runtime_kind_label(runtime: ServiceRuntimeKind) -> &'static str {
     match runtime {
         ServiceRuntimeKind::Process => "process",
         ServiceRuntimeKind::Container => "container",
+    }
+}
+
+fn kubernetes_cluster_dto(snapshot: KubernetesClusterSnapshot) -> KubernetesClusterDto {
+    KubernetesClusterDto {
+        name: snapshot.name,
+        provider: kubernetes_provider_label(snapshot.provider).to_string(),
+        context: snapshot.context,
+        default_namespace: snapshot.default_namespace,
+        selected_namespace: snapshot.selected_namespace,
+        connectivity: kubernetes_connectivity_label(&snapshot.connectivity).to_string(),
+        namespaces: snapshot
+            .namespaces
+            .into_iter()
+            .map(kubernetes_namespace_dto)
+            .collect(),
+        workloads: snapshot
+            .workloads
+            .into_iter()
+            .map(kubernetes_workload_dto)
+            .collect(),
+        services: snapshot
+            .services
+            .into_iter()
+            .map(kubernetes_service_dto)
+            .collect(),
+        nodes: snapshot
+            .nodes
+            .into_iter()
+            .map(kubernetes_node_dto)
+            .collect(),
+        pods: snapshot.pods.into_iter().map(kubernetes_pod_dto).collect(),
+        ingresses: snapshot
+            .ingresses
+            .into_iter()
+            .map(kubernetes_ingress_dto)
+            .collect(),
+        endpoint_slices: snapshot
+            .endpoint_slices
+            .into_iter()
+            .map(kubernetes_endpoint_slice_dto)
+            .collect(),
+        events: snapshot
+            .events
+            .into_iter()
+            .map(kubernetes_event_dto)
+            .collect(),
+        topology: kubernetes_topology_dto(snapshot.topology),
+        warnings: snapshot.warnings,
+        last_error: snapshot.last_error,
+    }
+}
+
+fn kubernetes_namespace_dto(snapshot: KubernetesNamespaceSnapshot) -> KubernetesNamespaceDto {
+    KubernetesNamespaceDto {
+        name: snapshot.name,
+    }
+}
+
+fn kubernetes_cluster_discovery_dto(
+    discovery: KubernetesClusterDiscovery,
+) -> KubernetesClusterDiscoveryDto {
+    KubernetesClusterDiscoveryDto {
+        name: discovery.name,
+        provider: kubernetes_provider_label(discovery.provider).to_string(),
+        kubeconfig_path: discovery.kubeconfig_path,
+        context: discovery.context,
+        default_namespace: discovery.default_namespace,
+        already_configured: discovery.already_configured,
+        reachable: discovery.reachable,
+        error: discovery.error,
+    }
+}
+
+fn kubernetes_workload_dto(snapshot: KubernetesWorkloadSnapshot) -> KubernetesWorkloadDto {
+    KubernetesWorkloadDto {
+        kind: snapshot.kind,
+        name: snapshot.name,
+        namespace: snapshot.namespace,
+        desired_replicas: snapshot.desired_replicas,
+        ready_replicas: snapshot.ready_replicas,
+        available_replicas: snapshot.available_replicas,
+    }
+}
+
+fn kubernetes_service_dto(snapshot: KubernetesServiceSnapshot) -> KubernetesServiceDto {
+    KubernetesServiceDto {
+        name: snapshot.name,
+        namespace: snapshot.namespace,
+        service_type: snapshot.service_type,
+        cluster_ip: snapshot.cluster_ip,
+        ports: snapshot.ports,
+        selector: snapshot.selector,
+        external_ips: snapshot.external_ips,
+        endpoint_count: snapshot.endpoint_count,
+        target_pods: snapshot.target_pods,
+        ingress_routes: snapshot.ingress_routes,
+    }
+}
+
+fn kubernetes_node_dto(snapshot: KubernetesNodeSnapshot) -> KubernetesNodeDto {
+    KubernetesNodeDto {
+        name: snapshot.name,
+        ready: snapshot.ready,
+        roles: snapshot.roles,
+        kubernetes_version: snapshot.kubernetes_version,
+        internal_ip: snapshot.internal_ip,
+        external_ip: snapshot.external_ip,
+        allocatable_cpu: snapshot.allocatable_cpu,
+        allocatable_memory: snapshot.allocatable_memory,
+        allocatable_pods: snapshot.allocatable_pods,
+        taints: snapshot.taints,
+    }
+}
+
+fn kubernetes_pod_dto(snapshot: KubernetesPodSnapshot) -> KubernetesPodDto {
+    KubernetesPodDto {
+        name: snapshot.name,
+        namespace: snapshot.namespace,
+        phase: snapshot.phase,
+        ready_containers: snapshot.ready_containers,
+        total_containers: snapshot.total_containers,
+        restart_count: snapshot.restart_count,
+        owner_kind: snapshot.owner_kind,
+        owner_name: snapshot.owner_name,
+        node_name: snapshot.node_name,
+        pod_ip: snapshot.pod_ip,
+        images: snapshot.images,
+        labels: snapshot.labels,
+        warning_reason: snapshot.warning_reason,
+    }
+}
+
+fn kubernetes_ingress_dto(snapshot: KubernetesIngressSnapshot) -> KubernetesIngressDto {
+    KubernetesIngressDto {
+        name: snapshot.name,
+        namespace: snapshot.namespace,
+        class_name: snapshot.class_name,
+        hosts: snapshot.hosts,
+        service_backends: snapshot.service_backends,
+        tls_hosts: snapshot.tls_hosts,
+    }
+}
+
+fn kubernetes_endpoint_slice_dto(
+    snapshot: KubernetesEndpointSliceSnapshot,
+) -> KubernetesEndpointSliceDto {
+    KubernetesEndpointSliceDto {
+        name: snapshot.name,
+        namespace: snapshot.namespace,
+        service_name: snapshot.service_name,
+        ready_endpoints: snapshot.ready_endpoints,
+        total_endpoints: snapshot.total_endpoints,
+        addresses: snapshot.addresses,
+        target_pods: snapshot.target_pods,
+    }
+}
+
+fn kubernetes_event_dto(snapshot: KubernetesEventSnapshot) -> KubernetesEventDto {
+    KubernetesEventDto {
+        namespace: snapshot.namespace,
+        involved_kind: snapshot.involved_kind,
+        involved_name: snapshot.involved_name,
+        event_type: snapshot.event_type,
+        reason: snapshot.reason,
+        message: snapshot.message,
+        count: snapshot.count,
+        first_timestamp: snapshot.first_timestamp,
+        last_timestamp: snapshot.last_timestamp,
+    }
+}
+
+fn kubernetes_topology_dto(snapshot: KubernetesTopologySnapshot) -> KubernetesTopologyDto {
+    KubernetesTopologyDto {
+        nodes: snapshot
+            .nodes
+            .into_iter()
+            .map(kubernetes_topology_node_dto)
+            .collect(),
+        edges: snapshot
+            .edges
+            .into_iter()
+            .map(kubernetes_topology_edge_dto)
+            .collect(),
+    }
+}
+
+fn kubernetes_topology_node_dto(snapshot: KubernetesTopologyNode) -> KubernetesTopologyNodeDto {
+    KubernetesTopologyNodeDto {
+        id: snapshot.id,
+        kind: snapshot.kind,
+        label: snapshot.label,
+        subtitle: snapshot.subtitle,
+        status: snapshot.status,
+        badges: snapshot.badges,
+        column: snapshot.column,
+        row: snapshot.row,
+    }
+}
+
+fn kubernetes_topology_edge_dto(snapshot: KubernetesTopologyEdge) -> KubernetesTopologyEdgeDto {
+    KubernetesTopologyEdgeDto {
+        from: snapshot.from,
+        to: snapshot.to,
+        kind: snapshot.kind,
+        label: snapshot.label,
+        status: snapshot.status,
+    }
+}
+
+fn kubernetes_connectivity_label(state: &KubernetesConnectivityState) -> &'static str {
+    match state {
+        KubernetesConnectivityState::NotConfigured => "not_configured",
+        KubernetesConnectivityState::Active => "active",
+        KubernetesConnectivityState::Inactive => "inactive",
+        KubernetesConnectivityState::Error(_) => "error",
+    }
+}
+
+fn kubernetes_provider_label(provider: KubernetesProvider) -> &'static str {
+    match provider {
+        KubernetesProvider::KubeconfigContext => "kubeconfig_context",
+        KubernetesProvider::Local => "local",
+        KubernetesProvider::Remote => "remote",
+    }
+}
+
+fn map_cluster_error(err: String) -> ApiError {
+    if err.to_ascii_lowercase().contains("not found") {
+        ApiError::not_found(err)
+    } else {
+        ApiError::bad_request(err)
     }
 }
 
@@ -1940,6 +2400,237 @@ fn openapi_component_schemas() -> serde_json::Value {
             },
             "additionalProperties": true
         },
+        "ClustersResponse": {
+            "type": "object",
+            "required": ["clusters"],
+            "properties": {
+                "clusters": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/KubernetesClusterDto" }
+                }
+            }
+        },
+        "ClusterDiscoveryResponse": {
+            "type": "object",
+            "required": ["clusters"],
+            "properties": {
+                "clusters": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/KubernetesClusterDiscoveryDto" }
+                }
+            }
+        },
+        "KubernetesClusterDiscoveryDto": {
+            "type": "object",
+            "required": ["name", "provider", "context", "default_namespace", "already_configured", "reachable"],
+            "properties": {
+                "name": { "type": "string" },
+                "provider": { "type": "string", "enum": ["kubeconfig_context", "local", "remote"] },
+                "kubeconfig_path": { "type": "string", "nullable": true },
+                "context": { "type": "string" },
+                "default_namespace": { "type": "string" },
+                "already_configured": { "type": "boolean" },
+                "reachable": { "type": "boolean" },
+                "error": { "type": "string", "nullable": true }
+            }
+        },
+        "ClusterImportRequest": {
+            "type": "object",
+            "required": ["clusters"],
+            "properties": {
+                "clusters": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/KubernetesClusterImport" }
+                }
+            }
+        },
+        "KubernetesClusterImport": {
+            "type": "object",
+            "required": ["provider", "context"],
+            "properties": {
+                "name": { "type": "string", "nullable": true },
+                "provider": { "type": "string", "enum": ["kubeconfig_context", "local", "remote"] },
+                "kubeconfig_path": { "type": "string", "nullable": true },
+                "context": { "type": "string" },
+                "default_namespace": { "type": "string", "nullable": true }
+            }
+        },
+        "ClusterImportResponse": {
+            "type": "object",
+            "required": ["imported", "saved_config_path", "clusters"],
+            "properties": {
+                "imported": { "type": "integer" },
+                "saved_config_path": { "type": "string" },
+                "clusters": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesClusterDto" } }
+            }
+        },
+        "KubernetesClusterDto": {
+            "type": "object",
+            "required": ["name", "provider", "context", "default_namespace", "selected_namespace", "connectivity", "namespaces", "workloads", "services", "nodes", "pods", "ingresses", "endpoint_slices", "events", "topology", "warnings"],
+            "properties": {
+                "name": { "type": "string" },
+                "provider": { "type": "string", "enum": ["kubeconfig_context", "local", "remote"] },
+                "context": { "type": "string" },
+                "default_namespace": { "type": "string" },
+                "selected_namespace": { "type": "string" },
+                "connectivity": { "type": "string", "enum": ["not_configured", "active", "inactive", "error"] },
+                "namespaces": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesNamespaceDto" } },
+                "workloads": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesWorkloadDto" } },
+                "services": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesServiceDto" } },
+                "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesNodeDto" } },
+                "pods": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesPodDto" } },
+                "ingresses": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesIngressDto" } },
+                "endpoint_slices": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesEndpointSliceDto" } },
+                "events": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesEventDto" } },
+                "topology": { "$ref": "#/components/schemas/KubernetesTopologyDto" },
+                "warnings": { "type": "array", "items": { "type": "string" } },
+                "last_error": { "type": "string", "nullable": true }
+            }
+        },
+        "KubernetesNamespaceDto": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": { "type": "string" }
+            }
+        },
+        "KubernetesWorkloadDto": {
+            "type": "object",
+            "required": ["kind", "name", "namespace"],
+            "properties": {
+                "kind": { "type": "string" },
+                "name": { "type": "string" },
+                "namespace": { "type": "string" },
+                "desired_replicas": { "type": "integer", "format": "uint64", "nullable": true },
+                "ready_replicas": { "type": "integer", "format": "uint64", "nullable": true },
+                "available_replicas": { "type": "integer", "format": "uint64", "nullable": true }
+            }
+        },
+        "KubernetesServiceDto": {
+            "type": "object",
+            "required": ["name", "namespace", "service_type", "ports"],
+            "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" },
+                "service_type": { "type": "string" },
+                "cluster_ip": { "type": "string", "nullable": true },
+                "ports": { "type": "array", "items": { "type": "string" } },
+                "selector": { "type": "array", "items": { "type": "string" } },
+                "external_ips": { "type": "array", "items": { "type": "string" } },
+                "endpoint_count": { "type": "integer" },
+                "target_pods": { "type": "array", "items": { "type": "string" } },
+                "ingress_routes": { "type": "array", "items": { "type": "string" } }
+            }
+        },
+        "KubernetesNodeDto": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "ready": { "type": "boolean" },
+                "roles": { "type": "array", "items": { "type": "string" } },
+                "kubernetes_version": { "type": "string", "nullable": true },
+                "internal_ip": { "type": "string", "nullable": true },
+                "external_ip": { "type": "string", "nullable": true },
+                "allocatable_cpu": { "type": "string", "nullable": true },
+                "allocatable_memory": { "type": "string", "nullable": true },
+                "allocatable_pods": { "type": "string", "nullable": true },
+                "taints": { "type": "array", "items": { "type": "string" } }
+            }
+        },
+        "KubernetesPodDto": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" },
+                "phase": { "type": "string" },
+                "ready_containers": { "type": "integer" },
+                "total_containers": { "type": "integer" },
+                "restart_count": { "type": "integer" },
+                "owner_kind": { "type": "string", "nullable": true },
+                "owner_name": { "type": "string", "nullable": true },
+                "node_name": { "type": "string", "nullable": true },
+                "pod_ip": { "type": "string", "nullable": true },
+                "images": { "type": "array", "items": { "type": "string" } },
+                "labels": { "type": "array", "items": { "type": "string" } },
+                "warning_reason": { "type": "string", "nullable": true }
+            }
+        },
+        "KubernetesIngressDto": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" },
+                "class_name": { "type": "string", "nullable": true },
+                "hosts": { "type": "array", "items": { "type": "string" } },
+                "service_backends": { "type": "array", "items": { "type": "string" } },
+                "tls_hosts": { "type": "array", "items": { "type": "string" } }
+            }
+        },
+        "KubernetesEndpointSliceDto": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" },
+                "service_name": { "type": "string", "nullable": true },
+                "ready_endpoints": { "type": "integer" },
+                "total_endpoints": { "type": "integer" },
+                "addresses": { "type": "array", "items": { "type": "string" } },
+                "target_pods": { "type": "array", "items": { "type": "string" } }
+            }
+        },
+        "KubernetesEventDto": {
+            "type": "object",
+            "properties": {
+                "namespace": { "type": "string" },
+                "involved_kind": { "type": "string" },
+                "involved_name": { "type": "string" },
+                "event_type": { "type": "string" },
+                "reason": { "type": "string" },
+                "message": { "type": "string" },
+                "count": { "type": "integer" },
+                "first_timestamp": { "type": "string", "nullable": true },
+                "last_timestamp": { "type": "string", "nullable": true }
+            }
+        },
+        "KubernetesTopologyDto": {
+            "type": "object",
+            "properties": {
+                "nodes": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesTopologyNodeDto" } },
+                "edges": { "type": "array", "items": { "$ref": "#/components/schemas/KubernetesTopologyEdgeDto" } }
+            }
+        },
+        "KubernetesTopologyNodeDto": {
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "kind": { "type": "string" },
+                "label": { "type": "string" },
+                "subtitle": { "type": "string" },
+                "status": { "type": "string" },
+                "badges": { "type": "array", "items": { "type": "string" } },
+                "column": { "type": "integer" },
+                "row": { "type": "integer" }
+            }
+        },
+        "KubernetesTopologyEdgeDto": {
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "kind": { "type": "string" },
+                "label": { "type": "string" },
+                "status": { "type": "string" }
+            }
+        },
+        "ClusterMutationResponse": {
+            "type": "object",
+            "required": ["cluster", "action", "message"],
+            "properties": {
+                "cluster": { "type": "string" },
+                "action": { "type": "string", "enum": ["wireguard_start", "wireguard_stop"] },
+                "message": { "type": "string" }
+            }
+        },
         "MutationResponse": {
             "type": "object",
             "required": ["project", "action", "results"],
@@ -1970,6 +2661,7 @@ fn openapi_component_schemas() -> serde_json::Value {
                 "name": { "type": "string" },
                 "dir": { "type": "string" },
                 "ip": { "type": "string" },
+                "health_check_interval_secs": { "type": "integer", "format": "uint64", "nullable": true },
                 "services": {
                     "type": "array",
                     "items": { "$ref": "#/components/schemas/ProjectServiceRequest" }
@@ -1982,6 +2674,7 @@ fn openapi_component_schemas() -> serde_json::Value {
             "properties": {
                 "dir": { "type": "string" },
                 "ip": { "type": "string" },
+                "health_check_interval_secs": { "type": "integer", "format": "uint64", "nullable": true },
                 "services": {
                     "type": "array",
                     "items": { "$ref": "#/components/schemas/ProjectServiceRequest" }
@@ -2012,7 +2705,8 @@ fn openapi_component_schemas() -> serde_json::Value {
             "properties": {
                 "port": { "type": "integer", "format": "uint16" },
                 "protocol": { "$ref": "#/components/schemas/ProxyEndpointProtocol" },
-                "health_path": { "type": "string", "nullable": true }
+                "health_path": { "type": "string", "nullable": true },
+                "health_check_interval_secs": { "type": "integer", "format": "uint64", "nullable": true }
             }
         },
         "ProxyEndpointProtocol": {
@@ -2101,6 +2795,66 @@ fn openapi_spec_json(bind_port: u16, auth_enabled: bool) -> serde_json::Value {
                 "get": {
                     "summary": "Doctor issues",
                     "responses": { "200": openapi_json_response("DoctorResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/clusters"): {
+                "get": {
+                    "summary": "List Kubernetes clusters",
+                    "responses": { "200": openapi_json_response("ClustersResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/clusters/discover"): {
+                "get": {
+                    "summary": "Discover Kubernetes contexts",
+                    "responses": { "200": openapi_json_response("ClusterDiscoveryResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/clusters/import"): {
+                "post": {
+                    "summary": "Import Kubernetes contexts",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/ClusterImportRequest" }
+                            }
+                        }
+                    },
+                    "responses": { "200": openapi_json_response("ClusterImportResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/clusters/{{cluster}}"): {
+                "get": {
+                    "summary": "Kubernetes cluster details",
+                    "parameters": [
+                        { "name": "cluster", "in": "path", "required": true, "schema": { "type": "string" } },
+                        { "name": "namespace", "in": "query", "required": false, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": openapi_json_response("KubernetesClusterDto") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/clusters/{{cluster}}/wireguard/start"): {
+                "post": {
+                    "summary": "Start Kubernetes cluster WireGuard tunnel",
+                    "parameters": [
+                        { "name": "cluster", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": openapi_json_response("ClusterMutationResponse") },
+                    "security": get_security
+                }
+            },
+            format!("/{AGENT_API_VERSION}/clusters/{{cluster}}/wireguard/stop"): {
+                "post": {
+                    "summary": "Stop Kubernetes cluster WireGuard tunnel",
+                    "parameters": [
+                        { "name": "cluster", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": openapi_json_response("ClusterMutationResponse") },
                     "security": get_security
                 }
             },
@@ -2375,6 +3129,27 @@ mod tests {
                 format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/input"),
                 vec!["post"],
             ),
+            (format!("/{AGENT_API_VERSION}/clusters"), vec!["get"]),
+            (
+                format!("/{AGENT_API_VERSION}/clusters/discover"),
+                vec!["get"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/clusters/import"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/clusters/{{cluster}}"),
+                vec!["get"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/clusters/{{cluster}}/wireguard/start"),
+                vec!["post"],
+            ),
+            (
+                format!("/{AGENT_API_VERSION}/clusters/{{cluster}}/wireguard/stop"),
+                vec!["post"],
+            ),
         ];
 
         for (path, methods) in expected_paths {
@@ -2425,6 +3200,12 @@ mod tests {
         assert!(schemas.contains_key("ServiceResourceSampleDto"));
         assert!(schemas.contains_key("ProjectCreateRequest"));
         assert!(schemas.contains_key("ServiceInputRequest"));
+        assert!(schemas.contains_key("ClustersResponse"));
+        assert!(schemas.contains_key("ClusterDiscoveryResponse"));
+        assert!(schemas.contains_key("ClusterImportRequest"));
+        assert!(schemas.contains_key("ClusterImportResponse"));
+        assert!(schemas.contains_key("KubernetesClusterDto"));
+        assert!(schemas.contains_key("ClusterMutationResponse"));
         assert_eq!(
             schemas["ServiceRuntimeDto"]["properties"]["input_attached"]["type"],
             "boolean"
@@ -2569,6 +3350,7 @@ mod tests {
                     autostart: false,
                     health_path: None,
                 }],
+                health_check_interval_secs: None,
                 default_open_service: Some("worker".to_string()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,
@@ -2584,6 +3366,7 @@ mod tests {
                 port: 8080,
                 protocol: ProxyEndpointProtocol::Http1,
                 health_path: None,
+                health_check_interval_secs: None,
             }];
         assert!(config_requires_reverse_proxy_sync(&config));
 
@@ -2689,6 +3472,7 @@ mod tests {
                     autostart: false,
                     health_path: None,
                 }],
+                health_check_interval_secs: None,
                 default_open_service: Some("web".to_string()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,
@@ -2766,6 +3550,7 @@ mod tests {
                     autostart: false,
                     health_path: None,
                 }],
+                health_check_interval_secs: None,
                 default_open_service: Some("db".to_string()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,
@@ -2796,6 +3581,7 @@ mod tests {
                 port: 50051,
                 protocol: Some(ProxyEndpointProtocol::GrpcH2c),
                 health_path: Some("/health".to_string()),
+                health_check_interval_secs: None,
             }],
             port: None,
             protocol: Some(ProxyEndpointProtocol::Http1),

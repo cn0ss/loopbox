@@ -788,6 +788,7 @@ mod tests {
                     autostart: false,
                     health_path: None,
                 }],
+                health_check_interval_secs: None,
                 default_open_service: Some("web".to_string()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,

@@ -83,11 +83,8 @@ pub(crate) fn LogPopoutWindow() -> Element {
         .and_then(|svc| loopbox::service_log_attached(&pn, svc).ok())
         .unwrap_or(false);
 
-    let main_css_href = super::main_css_href();
-
     rsx! {
-        document::Stylesheet { href: main_css_href }
-        document::Stylesheet { href: "https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" }
+        super::AtlasStylesheets {}
 
         div { class: "log-popout-root",
             div { class: "log-toolbar",

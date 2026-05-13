@@ -57,9 +57,14 @@ pub(super) fn healthcheck_ok(targets: &[String], host: &str, port: u16, health_p
 }
 
 pub(super) fn service_ports_healthy(
+    config: &LoopboxConfig,
+    project: &ProjectConfig,
+    project_name: &str,
+    service_name: &str,
     ports: &[ServicePortConfig],
     targets: &[String],
     host: &str,
+    health_checks: &mut HashMap<String, CachedHealthCheck>,
 ) -> bool {
     // Health checks are opt-in per port via health_path.
     // If no configured port has a health target, treat the service as
@@ -83,6 +88,22 @@ pub(super) fn service_ports_healthy(
             return false;
         }
 
+        let interval_secs = effective_health_check_interval_secs(config, project, entry);
+        let cache_key = health_check_cache_key(project_name, service_name, entry, targets, host);
+        if let Some(cached) = health_checks.get(&cache_key) {
+            let fresh = cached
+                .checked_at
+                .elapsed()
+                .map(|elapsed| elapsed.as_secs() < interval_secs)
+                .unwrap_or(false);
+            if fresh {
+                if !cached.healthy {
+                    return false;
+                }
+                continue;
+            }
+        }
+
         if entry.protocol == ProxyEndpointProtocol::Http1 {
             if let Some(health_path) = entry
                 .health_path
@@ -90,7 +111,15 @@ pub(super) fn service_ports_healthy(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
-                if !healthcheck_ok(targets, host, entry.port, health_path) {
+                let healthy = healthcheck_ok(targets, host, entry.port, health_path);
+                health_checks.insert(
+                    cache_key,
+                    CachedHealthCheck {
+                        checked_at: SystemTime::now(),
+                        healthy,
+                    },
+                );
+                if !healthy {
                     return false;
                 }
             }
@@ -101,7 +130,15 @@ pub(super) fn service_ports_healthy(
                 .map(str::trim)
                 .filter(|value| !value.is_empty());
             if let Some(target) = grpc_target {
-                if !grpc_healthcheck_ok(targets, entry.port, Some(target)) {
+                let healthy = grpc_healthcheck_ok(targets, entry.port, Some(target));
+                health_checks.insert(
+                    cache_key,
+                    CachedHealthCheck {
+                        checked_at: SystemTime::now(),
+                        healthy,
+                    },
+                );
+                if !healthy {
                     return false;
                 }
             }
@@ -109,6 +146,45 @@ pub(super) fn service_ports_healthy(
     }
 
     true
+}
+
+pub(super) fn effective_health_check_interval_secs(
+    config: &LoopboxConfig,
+    project: &ProjectConfig,
+    entry: &ServicePortConfig,
+) -> u64 {
+    super::super::config::sanitize_health_check_interval_secs(entry.health_check_interval_secs)
+        .or_else(|| {
+            super::super::config::sanitize_health_check_interval_secs(
+                project.health_check_interval_secs,
+            )
+        })
+        .or_else(|| {
+            super::super::config::sanitize_health_check_interval_secs(Some(
+                config.global.health_check_interval_secs,
+            ))
+        })
+        .unwrap_or_else(default_health_check_interval_secs)
+}
+
+fn health_check_cache_key(
+    project_name: &str,
+    service_name: &str,
+    entry: &ServicePortConfig,
+    targets: &[String],
+    host: &str,
+) -> String {
+    let health_path = entry
+        .health_path
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    format!(
+        "{project_name}\n{service_name}\n{host}\n{}\n{:?}\n{health_path}\n{}",
+        entry.port,
+        entry.protocol,
+        targets.join(",")
+    )
 }
 
 fn port_has_health_target(entry: &ServicePortConfig) -> bool {

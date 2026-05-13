@@ -33,86 +33,109 @@ pub(super) fn render_sidebar(
             }
 
             nav { class: "sidebar-nav",
-                // ── Sandboxes tree header ──
-                button {
-                    class: if sandboxes_header_active { "nav-link nav-link-tree active" } else { "nav-link nav-link-tree" },
-                    onclick: move |_| {
-                        if sandboxes_header_active {
-                            sandboxes_expanded.set(!is_expanded);
-                        } else {
-                            current_page.set(Page::Sandboxes);
-                            selected_project.set(None);
-                            sandboxes_expanded.set(true);
-                        }
-                    },
-                    span {
-                        class: if is_expanded { "nav-tree-arrow nav-tree-arrow-open" } else { "nav-tree-arrow" },
-                        "▸"
-                    }
-                    span { class: "nav-label", "Sandboxes" }
-                    if project_count > 0 {
-                        span { class: "nav-count", "{project_count}" }
-                    }
-                }
+                // ── Workspaces ──
+                div { class: "nav-section",
+                    div { class: "nav-section-label", "workspaces" }
 
-                // ── Sandbox tree items ──
-                if is_expanded {
-                    for name in projects.iter() {
-                        {{
-                            let is_active = page == Page::Sandboxes
-                                && selected_name.as_deref() == Some(name.as_str());
-                            let n = name.clone();
-                            let label = name.clone();
-                            rsx! {
-                                button {
-                                    key: "{label}",
-                                    class: if is_active { "nav-sandbox active" } else { "nav-sandbox" },
-                                    onclick: move |_| {
-                                        selected_project.set(Some(n.clone()));
-                                        current_page.set(Page::Sandboxes);
-                                    },
-                                    span { class: "nav-sandbox-dot" }
-                                    span { class: "nav-sandbox-label", "{label}" }
-                                }
-                            }
-                        }}
-                    }
-                }
-
-                button {
-                    class: if page == Page::Agents { "nav-link active" } else { "nav-link" },
-                    onclick: move |_| current_page.set(Page::Agents),
-                    span { class: "nav-label", "Agents" }
-                }
-                button {
-                    class: if page == Page::Runtime { "nav-link active" } else { "nav-link" },
-                    onclick: move |_| current_page.set(Page::Runtime),
-                    span { class: "nav-label", "Runtime" }
-                }
-                button {
-                    class: if page == Page::Diagnostics { "nav-link active" } else { "nav-link" },
-                    onclick: move |_| current_page.set(Page::Diagnostics),
-                    span { class: "nav-label", "Diagnostics" }
-                }
-                if show_agent_api_audit_tab {
                     button {
-                        class: if page == Page::AgentApiAudit { "nav-link active" } else { "nav-link" },
+                        class: if sandboxes_header_active { "nav-link nav-link-tree active" } else { "nav-link nav-link-tree" },
+                        onclick: move |_| {
+                            if sandboxes_header_active {
+                                sandboxes_expanded.set(!is_expanded);
+                            } else {
+                                current_page.set(Page::Sandboxes);
+                                selected_project.set(None);
+                                sandboxes_expanded.set(true);
+                            }
+                        },
+                        span {
+                            class: if is_expanded { "nav-tree-arrow nav-tree-arrow-open" } else { "nav-tree-arrow" },
+                            "▸"
+                        }
+                        span { class: "nav-label", "Sandboxes" }
+                        if project_count > 0 {
+                            span { class: "nav-count", "{project_count}" }
+                        }
+                    }
+
+                    if is_expanded {
+                        for name in projects.iter() {
+                            {{
+                                let is_active = page == Page::Sandboxes
+                                    && selected_name.as_deref() == Some(name.as_str());
+                                let n = name.clone();
+                                let label = name.clone();
+                                rsx! {
+                                    button {
+                                        key: "{label}",
+                                        class: if is_active { "nav-sandbox active" } else { "nav-sandbox" },
+                                        onclick: move |_| {
+                                            selected_project.set(Some(n.clone()));
+                                            current_page.set(Page::Sandboxes);
+                                        },
+                                        span { class: "nav-sandbox-dot" }
+                                        span { class: "nav-sandbox-label", "{label}" }
+                                    }
+                                }
+                            }}
+                        }
+                    }
+
+                    button {
+                        class: if page == Page::Clusters { "nav-link active" } else { "nav-link" },
                         onclick: move |_| {
                             selected_project.set(None);
-                            current_page.set(Page::AgentApiAudit);
+                            current_page.set(Page::Clusters);
                         },
-                        span { class: "nav-label", "Agent API" }
+                        span { class: "nav-label", "Clusters" }
                     }
                 }
-                button {
-                    class: if page == Page::System { "nav-link active" } else { "nav-link" },
-                    onclick: move |_| current_page.set(Page::System),
-                    span { class: "nav-label", "System" }
+
+                // ── Activity ──
+                div { class: "nav-section",
+                    div { class: "nav-section-label", "activity" }
+
+                    button {
+                        class: if page == Page::Runtime { "nav-link active" } else { "nav-link" },
+                        onclick: move |_| current_page.set(Page::Runtime),
+                        span { class: "nav-label", "Runtime" }
+                    }
+                    button {
+                        class: if page == Page::Agents { "nav-link active" } else { "nav-link" },
+                        onclick: move |_| current_page.set(Page::Agents),
+                        span { class: "nav-label", "Agents" }
+                    }
+                    if show_agent_api_audit_tab {
+                        button {
+                            class: if page == Page::AgentApiAudit { "nav-link active" } else { "nav-link" },
+                            onclick: move |_| {
+                                selected_project.set(None);
+                                current_page.set(Page::AgentApiAudit);
+                            },
+                            span { class: "nav-label", "Agent API" }
+                        }
+                    }
                 }
-                button {
-                    class: if page == Page::Settings { "nav-link active" } else { "nav-link" },
-                    onclick: move |_| current_page.set(Page::Settings),
-                    span { class: "nav-label", "Settings" }
+
+                // ── System ──
+                div { class: "nav-section",
+                    div { class: "nav-section-label", "system" }
+
+                    button {
+                        class: if page == Page::Diagnostics { "nav-link active" } else { "nav-link" },
+                        onclick: move |_| current_page.set(Page::Diagnostics),
+                        span { class: "nav-label", "Diagnostics" }
+                    }
+                    button {
+                        class: if page == Page::System { "nav-link active" } else { "nav-link" },
+                        onclick: move |_| current_page.set(Page::System),
+                        span { class: "nav-label", "System" }
+                    }
+                    button {
+                        class: if page == Page::Settings { "nav-link active" } else { "nav-link" },
+                        onclick: move |_| current_page.set(Page::Settings),
+                        span { class: "nav-label", "Settings" }
+                    }
                 }
             }
 

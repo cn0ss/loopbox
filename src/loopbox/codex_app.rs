@@ -1221,6 +1221,8 @@ Loopbox vocabulary:
 
 Operational rules:
 - Prefer Loopbox project hostnames from tool output over guessed localhost ports.
+- When onboarding or moving a project into Loopbox, keep app commands minimal and put service port/protocol/workdir changes in Loopbox project config. Do not add `--host`, `--port`, `--strictPort`, fallback Vite port ranges, broad development CORS allowlists, `0.0.0.0`, or sandbox IPs to app config unless the user explicitly asks for that exact app-level change.
+- Use Loopbox service hostnames for local app URLs and provider callback/redirect URLs.
 - Fetch logs with explicit limits and ask before broad or expensive log reads.
 - Use runtime and incident timeline tools before reading raw logs, resources, or requests for failed services.
 - To create a sandbox/project, first collect the required fields: sandbox name, absolute project directory, services, commands, working directories if needed, ports, protocols, and health paths. Then call `loopbox_validate_project_config`, explain any validation issues, and only call `loopbox_create_project` after user approval.

@@ -441,6 +441,7 @@ mod tests {
                 port: 5173,
                 protocol: ProxyEndpointProtocol::Http1,
                 health_path: None,
+                health_check_interval_secs: None,
             }],
             port: Some(5173),
             protocol: ProxyEndpointProtocol::Http1,

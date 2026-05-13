@@ -76,6 +76,7 @@ pub(super) fn wizard_discovered_service_entry(
             port: port.map(|value| value.to_string()).unwrap_or_default(),
             protocol: "http1".to_string(),
             health_path: String::new(),
+            health_check_interval_secs: String::new(),
         }],
         port: port.map(|value| value.to_string()).unwrap_or_default(),
         protocol: "http1".to_string(),

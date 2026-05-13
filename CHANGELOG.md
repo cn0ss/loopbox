@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.5 - 2026-05-13
+
+### Added
+- Added Kubernetes cluster management with kubeconfig discovery/import, namespace/workload/service inspection, topology summaries, and optional WireGuard controls.
+
+### Changed
+- Split the app stylesheet into focused asset files and expanded runtime, diagnostics, sandbox, and Agent API views for cluster-aware workflows.
+- Documented Kubernetes Agent API endpoints and configurable health-check intervals.
+
 ## v0.3.4 - 2026-05-12
 
 ### Fixed

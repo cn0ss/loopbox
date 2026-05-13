@@ -28,6 +28,7 @@ pub(super) fn build_compose_discovered_services(
                 port: port.published_port.to_string(),
                 protocol: compose_proxy_protocol(&service_name, port.published_port).to_string(),
                 health_path: String::new(),
+                health_check_interval_secs: String::new(),
             })
             .collect::<Vec<_>>();
         if port_rows.is_empty() {

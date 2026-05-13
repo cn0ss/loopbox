@@ -1,7 +1,8 @@
 use super::*;
 use crate::loopbox::{
-    GlobalConfig, LoopboxConfig, ProjectConfig, ProxyCaptureMode, ProxyEndpointConfig,
-    ProxyEndpointProtocol, ResourceMetricsSettings, ServiceConfig,
+    GlobalConfig, KubernetesClusterConfig, KubernetesProvider, LoopboxConfig, ProjectConfig,
+    ProxyCaptureMode, ProxyEndpointConfig, ProxyEndpointProtocol, ResourceMetricsSettings,
+    ServiceConfig, WireGuardMode, WireGuardTunnelConfig,
 };
 use std::collections::BTreeMap;
 
@@ -44,6 +45,7 @@ fn normalize_config_assigns_first_service_as_default_open_when_invalid() {
                         health_path: None,
                     },
                 ],
+                health_check_interval_secs: None,
                 default_open_service: Some("does-not-exist".to_string()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,
@@ -132,6 +134,97 @@ fn normalize_config_defaults_and_clamps_resource_metrics_settings() {
     assert_eq!(config.global.resource_metrics.sample_interval_secs, 2);
     assert_eq!(config.global.resource_metrics.retention_days, 7);
     assert_eq!(config.global.resource_metrics.max_storage_mb, 25);
+}
+
+#[test]
+fn normalize_config_defaults_and_clamps_health_check_intervals() {
+    let mut config = LoopboxConfig::default();
+
+    normalize_config(&mut config);
+
+    assert_eq!(config.global.health_check_interval_secs, 10);
+
+    config.global.health_check_interval_secs = 1;
+    normalize_config(&mut config);
+    assert_eq!(config.global.health_check_interval_secs, 2);
+
+    config.global.health_check_interval_secs = 600;
+    normalize_config(&mut config);
+    assert_eq!(config.global.health_check_interval_secs, 300);
+}
+
+#[test]
+fn kubernetes_settings_default_to_no_clusters() {
+    let config = LoopboxConfig::default();
+
+    assert!(config.global.kubernetes.clusters.is_empty());
+}
+
+#[test]
+fn normalize_config_sanitizes_kubernetes_clusters_and_wireguard() {
+    let mut config = LoopboxConfig {
+        global: GlobalConfig {
+            kubernetes: crate::loopbox::KubernetesSettings {
+                clusters: vec![
+                    KubernetesClusterConfig {
+                        name: "  Prod EU  ".to_string(),
+                        provider: KubernetesProvider::KubeconfigContext,
+                        kubeconfig_path: Some("  ~/.kube/prod.yaml  ".to_string()),
+                        context: "  prod-context  ".to_string(),
+                        default_namespace: "  ".to_string(),
+                        wireguard: Some(WireGuardTunnelConfig {
+                            name: "  wg-prod  ".to_string(),
+                            mode: WireGuardMode::WgQuick,
+                            interface: Some("  wg-prod0  ".to_string()),
+                            config_path: Some("  /etc/wireguard/prod.conf  ".to_string()),
+                            required: true,
+                        }),
+                    },
+                    KubernetesClusterConfig {
+                        name: "  ".to_string(),
+                        provider: KubernetesProvider::KubeconfigContext,
+                        kubeconfig_path: None,
+                        context: "missing-name".to_string(),
+                        default_namespace: "default".to_string(),
+                        wireguard: None,
+                    },
+                    KubernetesClusterConfig {
+                        name: "missing-context".to_string(),
+                        provider: KubernetesProvider::KubeconfigContext,
+                        kubeconfig_path: None,
+                        context: "  ".to_string(),
+                        default_namespace: "default".to_string(),
+                        wireguard: None,
+                    },
+                ],
+            },
+            ..GlobalConfig::default()
+        },
+        projects: BTreeMap::new(),
+    };
+
+    normalize_config(&mut config);
+
+    assert_eq!(config.global.kubernetes.clusters.len(), 1);
+    let cluster = &config.global.kubernetes.clusters[0];
+    assert_eq!(cluster.name, "prod-eu");
+    assert_eq!(cluster.context, "prod-context");
+    assert_eq!(cluster.default_namespace, "default");
+    assert_eq!(
+        cluster.kubeconfig_path.as_deref(),
+        Some("~/.kube/prod.yaml")
+    );
+    let wireguard = cluster
+        .wireguard
+        .as_ref()
+        .expect("wireguard config should remain");
+    assert_eq!(wireguard.name, "wg-prod");
+    assert_eq!(wireguard.interface.as_deref(), Some("wg-prod0"));
+    assert_eq!(
+        wireguard.config_path.as_deref(),
+        Some("/etc/wireguard/prod.conf")
+    );
+    assert!(wireguard.required);
 }
 
 #[test]
@@ -272,6 +365,7 @@ fn normalize_config_migrates_matching_global_endpoint_to_project() {
                     autostart: false,
                     health_path: None,
                 }],
+                health_check_interval_secs: None,
                 default_open_service: Some("gateway".to_string()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,

@@ -1,0 +1,336 @@
+/* ════════════════════════════════════════════
+   ENV EDITOR / CODE EDITOR
+   ════════════════════════════════════════════ */
+
+.code-editor {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+}
+
+.code-editor-danger {
+    border-color: rgba(224, 138, 122, 0.32);
+    box-shadow: 0 0 0 1px rgba(224, 138, 122, 0.1);
+}
+
+.code-editor-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 14px;
+    background: rgba(20, 22, 26, 0.55);
+    border-bottom: 1px solid var(--border);
+}
+
+.code-editor-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.code-editor-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.code-editor-file-badge {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    padding: 3px 8px 2px;
+    background: rgba(212, 218, 226, 0.04);
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    letter-spacing: 0.02em;
+}
+
+.code-editor-dirty-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--warn);
+    margin-right: 3px;
+}
+
+.code-editor-dirty-label {
+    font-size: 11px;
+    color: var(--warn);
+}
+
+.code-editor-toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 9px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+
+.code-editor-toolbar-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text-bright);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.code-editor-search {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+}
+
+.code-editor-search-input {
+    flex: 1;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    padding: 5px 10px;
+    outline: none;
+    transition: border-color var(--t-fast);
+}
+
+.code-editor-search-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(212, 238, 68, 0.1);
+}
+
+.code-editor-search-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.code-editor-search-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+}
+
+.code-editor-search-count {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    min-width: 60px;
+    text-align: center;
+}
+
+.code-editor-search-count-active {
+    color: var(--text-secondary);
+}
+
+.code-editor-body {
+    display: flex;
+    background: var(--bg-input);
+    height: 340px;
+    max-height: 500px;
+}
+
+.code-editor-gutter {
+    width: 44px;
+    flex-shrink: 0;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    padding: 10px 0;
+    user-select: none;
+    overflow: hidden;
+}
+
+.code-editor-line-num {
+    display: block;
+    text-align: right;
+    padding: 0 8px 0 4px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-dim);
+}
+
+.code-editor-content {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+.code-editor-highlight,
+.code-editor-input {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre;
+    padding: 12px 14px;
+    margin: 0;
+    box-sizing: border-box;
+}
+
+.code-editor-highlight {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    color: var(--text);
+    overflow: hidden;
+}
+
+.code-editor-input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    border: none;
+    color: transparent;
+    caret-color: var(--text-bright);
+    resize: none;
+    outline: none;
+    overflow: auto;
+    z-index: 1;
+}
+
+.code-editor-status {
+    display: flex;
+    gap: 12px;
+    padding: 6px 12px;
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border);
+}
+
+.code-editor-status-item {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.code-editor-status-modified {
+    color: var(--warn);
+}
+
+/* Syntax highlighting */
+
+.syn-comment { color: var(--text-faint); font-style: italic; }
+.syn-key { color: var(--accent); }
+.syn-eq { color: var(--text-dim); }
+.syn-val { color: var(--text); }
+.syn-string { color: var(--success); }
+.syn-export { color: var(--warn); }
+
+/* ════════════════════════════════════════════
+   CODE BOX (readonly textareas)
+   ════════════════════════════════════════════ */
+
+.code-box {
+    display: block;
+    width: 100%;
+    min-height: 120px;
+    max-height: 300px;
+    padding: 14px 16px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.65;
+    resize: vertical;
+    overflow: auto;
+    outline: none;
+    white-space: pre;
+}
+
+.code-box:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(212, 238, 68, 0.08);
+}
+
+.code-box-sm {
+    min-height: 60px;
+    max-height: 150px;
+}
+
+/* ════════════════════════════════════════════
+   ENV FILE LIST / MERGED ENV
+   ════════════════════════════════════════════ */
+
+.env-file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.env-file-path {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.env-merged-section {
+    margin-bottom: 16px;
+}
+
+.env-merged-section h3 {
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.env-merged-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.env-merged-row {
+    display: grid;
+    grid-template-columns: 180px 1fr auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 4px 8px;
+    font-size: 11px;
+    border-radius: var(--radius-sm);
+}
+
+.env-merged-row:hover {
+    background: var(--bg-hover);
+}
+
+.env-merged-key {
+    color: #ced4da;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.env-merged-val {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.env-merged-copy {
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.env-merged-row:hover .env-merged-copy {
+    opacity: 1;
+}
+

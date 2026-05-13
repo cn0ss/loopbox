@@ -3,6 +3,9 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+pub type RuntimeFd = i32;
+pub type RuntimePid = i32;
+
 pub fn supports_process_groups() -> bool {
     false
 }
@@ -25,14 +28,12 @@ pub fn spawn_pty_child(
     _workdir: &str,
     _cols: u16,
     _rows: u16,
-) -> Result<(i32, i32), String> {
+) -> Result<(RuntimeFd, RuntimePid), String> {
     Err("PTY mode is not supported on Windows. Use standard process mode.".to_string())
 }
 
-pub fn close_fd(_fd: i32) {}
-
 pub fn resize_pty(
-    _fd: i32,
+    _fd: &RuntimeFd,
     _cols: u16,
     _rows: u16,
     _cell_width_px: u32,
@@ -41,7 +42,7 @@ pub fn resize_pty(
     Err("PTY resize is not supported on Windows.".to_string())
 }
 
-pub fn wait_for_child_exit(_pid: i32) -> Result<i32, String> {
+pub fn wait_for_child_exit(_pid: RuntimePid) -> Result<i32, String> {
     Err("wait_for_child_exit is not supported on Windows.".to_string())
 }
 
@@ -61,24 +62,24 @@ pub fn forward_terminal_input_to_fifo(
     Err("FIFO terminal input is not supported on Windows.".to_string())
 }
 
-pub fn open_fifo_read_nonblocking(_path: &Path) -> Result<i32, String> {
+pub fn open_fifo_read_nonblocking(_path: &Path) -> Result<RuntimeFd, String> {
     Err("FIFO is not supported on Windows.".to_string())
 }
 
 pub fn forward_fifo_input_to_pty(
     _input_path: std::path::PathBuf,
-    _pty_writer_fd: i32,
+    _pty_writer_fd: RuntimeFd,
     _stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
     Err("PTY is not supported on Windows.".to_string())
 }
 
-pub fn write_all_fd(_fd: i32, _payload: &[u8]) -> Result<(), String> {
+pub fn write_all_fd(_fd: &RuntimeFd, _payload: &[u8]) -> Result<(), String> {
     Err("Raw fd write is not supported on Windows.".to_string())
 }
 
 pub fn write_pty_output_to_log(
-    _pty_reader_fd: i32,
+    _pty_reader_fd: RuntimeFd,
     _log_file: std::fs::File,
 ) -> Result<(), String> {
     Err("PTY log output is not supported on Windows.".to_string())

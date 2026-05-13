@@ -54,6 +54,7 @@ pub(super) fn blank_service_port_entry() -> ServicePortEntry {
         port: String::new(),
         protocol: "http1".to_string(),
         health_path: String::new(),
+        health_check_interval_secs: String::new(),
     }
 }
 
@@ -74,6 +75,7 @@ pub(super) fn service_entry_port_rows(entry: &ServiceEntry) -> Vec<ServicePortEn
                 "http1".to_string()
             },
             health_path: entry.health_path.clone(),
+            health_check_interval_secs: String::new(),
         }];
     }
 

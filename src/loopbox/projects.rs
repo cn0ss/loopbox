@@ -1,8 +1,8 @@
 use super::{
-    default_domain_suffix, effective_reverse_proxy_url_for_host, service_ports, AddProjectInput,
-    ContainerServiceConfig, GlobalConfig, LoopboxConfig, OpenTarget, ProjectConfig,
-    ProxyEndpointProtocol, ServiceConfig, ServiceEntry, ServicePortConfig, ServiceRuntimeKind,
-    UpdateProjectInput,
+    config::sanitize_health_check_interval_secs, default_domain_suffix,
+    effective_reverse_proxy_url_for_host, service_ports, AddProjectInput, ContainerServiceConfig,
+    GlobalConfig, LoopboxConfig, OpenTarget, ProjectConfig, ProxyEndpointProtocol, ServiceConfig,
+    ServiceEntry, ServicePortConfig, ServiceRuntimeKind, UpdateProjectInput,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -20,6 +20,8 @@ pub fn preview_add_project(
     }
 
     let dir = normalize_directory(&input.dir)?;
+    let health_check_interval_secs =
+        parse_health_check_interval_secs(&input.health_check_interval_secs)?;
     let services = parse_services(&input.services, &dir)?;
     let candidate_hosts = generated_service_hosts(&name, &services, &config.global.domain_suffix);
     ensure_unique_hosts(config, &candidate_hosts)?;
@@ -53,6 +55,7 @@ pub fn preview_add_project(
             dir,
             ip,
             services,
+            health_check_interval_secs,
             default_open_service,
             proxy_traffic_capture_enabled: None,
             proxy_traffic_capture_mode: None,
@@ -88,6 +91,8 @@ pub fn update_project(
         .ok_or_else(|| format!("Project '{project_name}' does not exist."))?;
 
     let dir = normalize_directory(&input.dir)?;
+    let health_check_interval_secs =
+        parse_health_check_interval_secs(&input.health_check_interval_secs)?;
     let services = parse_services(&input.services, &dir)?;
 
     let candidate_hosts =
@@ -128,6 +133,7 @@ pub fn update_project(
         dir,
         ip,
         services,
+        health_check_interval_secs,
         default_open_service,
         proxy_traffic_capture_enabled: existing.proxy_traffic_capture_enabled,
         proxy_traffic_capture_mode: existing.proxy_traffic_capture_mode.clone(),
@@ -465,6 +471,9 @@ fn parse_service_ports(
             port,
             protocol,
             health_path: option_trimmed(&port_entry.health_path),
+            health_check_interval_secs: parse_health_check_interval_secs(
+                &port_entry.health_check_interval_secs,
+            )?,
         });
     }
 
@@ -479,6 +488,7 @@ fn parse_service_ports(
             port,
             protocol,
             health_path: option_trimmed(&entry.health_path),
+            health_check_interval_secs: None,
         }]);
     }
 
@@ -492,6 +502,17 @@ fn option_trimmed(raw: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn parse_health_check_interval_secs(raw: &str) -> Result<Option<u64>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return Ok(None);
+    }
+    let parsed = trimmed
+        .parse::<u64>()
+        .map_err(|_| "Health check interval must be seconds between 2 and 300.".to_string())?;
+    Ok(sanitize_health_check_interval_secs(Some(parsed)))
 }
 
 fn dedupe_hosts(hosts: Vec<String>) -> Vec<String> {

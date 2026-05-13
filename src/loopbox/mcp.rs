@@ -134,6 +134,7 @@ struct McpProjectInput {
     name: String,
     dir: String,
     ip: Option<String>,
+    health_check_interval_secs: Option<u64>,
     services: Vec<McpServiceInput>,
 }
 
@@ -141,6 +142,7 @@ struct McpProjectInput {
 struct McpProjectUpdateInput {
     dir: String,
     ip: Option<String>,
+    health_check_interval_secs: Option<u64>,
     services: Vec<McpServiceInput>,
 }
 
@@ -162,6 +164,7 @@ struct McpPortInput {
     port: u16,
     protocol: Option<String>,
     health_path: Option<String>,
+    health_check_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -701,6 +704,10 @@ fn add_project_input(input: McpProjectInput) -> Result<AddProjectInput, String> 
         name: input.name,
         dir: input.dir,
         ip: input.ip.unwrap_or_default(),
+        health_check_interval_secs: input
+            .health_check_interval_secs
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
         services: input
             .services
             .into_iter()
@@ -713,6 +720,10 @@ fn update_project_input(input: McpProjectUpdateInput) -> Result<UpdateProjectInp
     Ok(UpdateProjectInput {
         dir: input.dir,
         ip: input.ip.unwrap_or_default(),
+        health_check_interval_secs: input
+            .health_check_interval_secs
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
         services: input
             .services
             .into_iter()
@@ -736,12 +747,17 @@ fn service_entry(input: McpServiceInput) -> Result<ServiceEntry, String> {
             port: port.port.to_string(),
             protocol: port.protocol.unwrap_or_else(|| "http1".to_string()),
             health_path: port.health_path.unwrap_or_default(),
+            health_check_interval_secs: port
+                .health_check_interval_secs
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
         })
         .collect::<Vec<_>>();
     let primary = ports.first().cloned().unwrap_or(ServicePortEntry {
         port: String::new(),
         protocol: "http1".to_string(),
         health_path: String::new(),
+        health_check_interval_secs: String::new(),
     });
     Ok(ServiceEntry {
         name: input.name,
@@ -794,6 +810,7 @@ mod tests {
             name: "demo".to_string(),
             dir: "/tmp/demo".to_string(),
             ip: None,
+            health_check_interval_secs: None,
             services: vec![McpServiceInput {
                 name: "web".to_string(),
                 command: "npm run dev".to_string(),
@@ -802,6 +819,7 @@ mod tests {
                     port: 5173,
                     protocol: None,
                     health_path: Some("/health".to_string()),
+                    health_check_interval_secs: None,
                 }]),
                 runtime: None,
                 env_files: Some(vec![".env".to_string()]),

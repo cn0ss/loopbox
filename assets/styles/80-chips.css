@@ -1,0 +1,58 @@
+/* ════════════════════════════════════════════
+   CHIPS
+   ════════════════════════════════════════════ */
+
+.chip {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 500;
+    padding: 3px 8px 2px;
+    border-radius: var(--radius-xs);
+    background: rgba(212, 218, 226, 0.04);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    line-height: 1.4;
+}
+
+.chip-success {
+    background: var(--success-bg);
+    color: var(--success);
+    border-color: rgba(125, 211, 168, 0.18);
+}
+
+.chip-danger {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border-color: rgba(224, 138, 122, 0.18);
+}
+
+.chip-warn {
+    background: var(--warn-bg);
+    color: var(--warn);
+    border-color: rgba(232, 181, 86, 0.18);
+}
+
+.chip-accent {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: rgba(212, 238, 68, 0.2);
+}
+
+/* ════════════════════════════════════════════
+   TOGGLE BUTTON STATE
+   ════════════════════════════════════════════ */
+
+.btn-toggle-on {
+    background: rgba(212, 238, 68, 0.08);
+    color: var(--accent);
+    border-color: rgba(212, 238, 68, 0.3);
+}
+
+.btn-toggle-on:hover {
+    background: rgba(212, 238, 68, 0.12);
+    border-color: rgba(212, 238, 68, 0.45);
+    color: var(--accent-bright);
+}
+

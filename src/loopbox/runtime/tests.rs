@@ -76,6 +76,7 @@ fn runtime_config_with_ip_and_port(
                     dir: "/tmp".to_string(),
                     ip: project_ip.to_string(),
                     services: vec![service_cfg],
+                    health_check_interval_secs: None,
                     default_open_service: Some(service.clone()),
                     proxy_traffic_capture_enabled: None,
                     proxy_traffic_capture_mode: None,
@@ -174,6 +175,7 @@ fn runtime_config_with_two_services(
                             health_path: None,
                         },
                     ],
+                    health_check_interval_secs: None,
                     default_open_service: Some(first_service.clone()),
                     proxy_traffic_capture_enabled: None,
                     proxy_traffic_capture_mode: None,
@@ -703,11 +705,13 @@ fn primary_service_port_prefers_http1_from_multi_port_config() {
                 port: 50051,
                 protocol: ProxyEndpointProtocol::GrpcH2c,
                 health_path: None,
+                health_check_interval_secs: None,
             },
             ServicePortConfig {
                 port: 8080,
                 protocol: ProxyEndpointProtocol::Http1,
                 health_path: Some("/health".to_string()),
+                health_check_interval_secs: None,
             },
         ],
         port: None,
@@ -723,6 +727,76 @@ fn primary_service_port_prefers_http1_from_multi_port_config() {
 }
 
 #[test]
+fn health_check_interval_prefers_port_then_project_then_global() {
+    let mut config = LoopboxConfig::default();
+    config.global.health_check_interval_secs = 15;
+    let mut project = ProjectConfig {
+        dir: "/tmp".to_string(),
+        ip: "127.0.0.30".to_string(),
+        services: vec![],
+        default_open_service: None,
+        proxy_traffic_capture_enabled: None,
+        proxy_traffic_capture_mode: None,
+        grpc_proto_paths: vec![],
+        proxy_endpoints: vec![],
+        health_check_interval_secs: Some(30),
+    };
+    let inherited = ServicePortConfig {
+        port: 8080,
+        protocol: ProxyEndpointProtocol::Http1,
+        health_path: Some("/health".to_string()),
+        health_check_interval_secs: None,
+    };
+    let overridden = ServicePortConfig {
+        health_check_interval_secs: Some(45),
+        ..inherited.clone()
+    };
+
+    assert_eq!(
+        effective_health_check_interval_secs(&config, &project, &inherited),
+        30
+    );
+    assert_eq!(
+        effective_health_check_interval_secs(&config, &project, &overridden),
+        45
+    );
+
+    project.health_check_interval_secs = None;
+    assert_eq!(
+        effective_health_check_interval_secs(&config, &project, &inherited),
+        15
+    );
+}
+
+#[test]
+fn health_check_interval_is_clamped_at_runtime() {
+    let mut config = LoopboxConfig::default();
+    config.global.health_check_interval_secs = 1;
+    let project = ProjectConfig {
+        dir: "/tmp".to_string(),
+        ip: "127.0.0.30".to_string(),
+        services: vec![],
+        default_open_service: None,
+        proxy_traffic_capture_enabled: None,
+        proxy_traffic_capture_mode: None,
+        grpc_proto_paths: vec![],
+        proxy_endpoints: vec![],
+        health_check_interval_secs: None,
+    };
+    let port = ServicePortConfig {
+        port: 8080,
+        protocol: ProxyEndpointProtocol::Http1,
+        health_path: Some("/health".to_string()),
+        health_check_interval_secs: Some(0),
+    };
+
+    assert_eq!(
+        effective_health_check_interval_secs(&config, &project, &port),
+        2
+    );
+}
+
+#[test]
 fn terminal_env_pairs_export_all_service_ports() {
     let project = "multiport".to_string();
     let service = ServiceConfig {
@@ -734,11 +808,13 @@ fn terminal_env_pairs_export_all_service_ports() {
                 port: 50051,
                 protocol: ProxyEndpointProtocol::GrpcH2c,
                 health_path: None,
+                health_check_interval_secs: None,
             },
             ServicePortConfig {
                 port: 8080,
                 protocol: ProxyEndpointProtocol::Http1,
                 health_path: Some("/health".to_string()),
+                health_check_interval_secs: None,
             },
         ],
         port: None,
@@ -758,6 +834,7 @@ fn terminal_env_pairs_export_all_service_ports() {
                 dir: "/tmp".to_string(),
                 ip: "127.0.0.30".to_string(),
                 services: vec![service.clone()],
+                health_check_interval_secs: None,
                 default_open_service: Some(service.name.clone()),
                 proxy_traffic_capture_enabled: None,
                 proxy_traffic_capture_mode: None,

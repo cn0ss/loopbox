@@ -71,11 +71,8 @@ pub(crate) fn TerminalPopoutWindow() -> Element {
         None => "connecting".to_string(),
     };
 
-    let main_css_href = super::main_css_href();
-
     rsx! {
-        document::Stylesheet { href: main_css_href }
-        document::Stylesheet { href: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" }
+        super::AtlasStylesheets {}
 
         div { class: "terminal-popout-root",
             div { class: "terminal-toolbar",

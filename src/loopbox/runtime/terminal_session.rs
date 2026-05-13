@@ -251,6 +251,7 @@ pub(super) fn run_terminal_session(
 #[cfg(unix)]
 mod session_unix {
     use super::*;
+    use rustix::process::Signal;
     #[cfg(not(feature = "ghostty-vt"))]
     use std::collections::VecDeque;
     use std::fs;
@@ -258,6 +259,8 @@ mod session_unix {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use crate::platform::runtime::{ReadFdError, RuntimeFd, RuntimePid};
 
     struct TerminalClient {
         stream: UnixStream,
@@ -325,10 +328,8 @@ mod session_unix {
             args.rows,
         )
         .map_err(TerminalSessionError::before_start)?;
-        if let Err(err) = set_fd_nonblocking(pty_fd) {
+        if let Err(err) = crate::platform::runtime::set_fd_nonblocking(&pty_fd) {
             terminate_child(child_pid);
-            crate::platform::runtime::close_fd(input_fd);
-            crate::platform::runtime::close_fd(pty_fd);
             let _ = fs::remove_file(&args.control_path);
             return Err(TerminalSessionError::after_start(err));
         }
@@ -339,8 +340,6 @@ mod session_unix {
             Ok(exit_code) => Ok(exit_code),
             Err(err) => {
                 terminate_child(child_pid);
-                crate::platform::runtime::close_fd(input_fd);
-                crate::platform::runtime::close_fd(pty_fd);
                 let _ = fs::remove_file(&args.control_path);
                 Err(TerminalSessionError::after_start(err))
             }
@@ -351,9 +350,9 @@ mod session_unix {
         args: &TerminalSessionArgs,
         mut log_file: fs::File,
         listener: UnixListener,
-        input_fd: libc::c_int,
-        pty_fd: libc::c_int,
-        child_pid: libc::pid_t,
+        input_fd: RuntimeFd,
+        pty_fd: RuntimeFd,
+        child_pid: RuntimePid,
         mut terminal: TerminalCore,
     ) -> Result<i32, String> {
         let mut clients = Vec::<TerminalClient>::new();
@@ -376,7 +375,7 @@ mod session_unix {
                             match handle_client_message(
                                 message,
                                 &mut terminal,
-                                pty_fd,
+                                &pty_fd,
                                 &mut client.stream,
                             ) {
                                 Ok(message_dirty) => dirty |= message_dirty,
@@ -404,7 +403,7 @@ mod session_unix {
             }
 
             loop {
-                match read_fd(pty_fd, &mut pty_buffer) {
+                match crate::platform::runtime::read_fd(&pty_fd, &mut pty_buffer) {
                     Ok(0) => break,
                     Ok(n) => {
                         let bytes = &pty_buffer[..n];
@@ -413,7 +412,7 @@ mod session_unix {
                         })?;
                         let responses = terminal.feed(bytes)?;
                         for response in responses {
-                            crate::platform::runtime::write_all_fd(pty_fd, &response)?;
+                            crate::platform::runtime::write_all_fd(&pty_fd, &response)?;
                         }
                         dirty = true;
                     }
@@ -427,10 +426,10 @@ mod session_unix {
             }
 
             loop {
-                match read_fd(input_fd, &mut fifo_buffer) {
+                match crate::platform::runtime::read_fd(&input_fd, &mut fifo_buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        crate::platform::runtime::write_all_fd(pty_fd, &fifo_buffer[..n])?;
+                        crate::platform::runtime::write_all_fd(&pty_fd, &fifo_buffer[..n])?;
                     }
                     Err(ReadFdError::WouldBlock) => break,
                     Err(ReadFdError::Closed) => break,
@@ -442,7 +441,7 @@ mod session_unix {
             }
 
             if exit_code.is_none() {
-                exit_code = try_wait_child(child_pid)?;
+                exit_code = crate::platform::runtime::try_wait_child_exit(child_pid)?;
             }
 
             if dirty && last_frame_sent.elapsed() >= Duration::from_millis(33) {
@@ -472,8 +471,6 @@ mod session_unix {
                 });
                 broadcast_server_message(&mut clients, &TerminalServerMessage::Frame(frame));
                 let _ = fs::remove_file(&args.control_path);
-                crate::platform::runtime::close_fd(input_fd);
-                crate::platform::runtime::close_fd(pty_fd);
                 return Ok(code);
             }
 
@@ -482,20 +479,20 @@ mod session_unix {
         }
     }
 
-    fn terminate_child(pid: libc::pid_t) {
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
+    fn terminate_child(pid: RuntimePid) {
+        crate::platform::runtime::terminate_process(pid, Signal::TERM);
         for _ in 0..8 {
-            if try_wait_child(pid).ok().flatten().is_some() {
+            if crate::platform::runtime::try_wait_child_exit(pid)
+                .ok()
+                .flatten()
+                .is_some()
+            {
                 return;
             }
             thread::sleep(Duration::from_millis(40));
         }
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
-        let _ = try_wait_child(pid);
+        crate::platform::runtime::terminate_process(pid, Signal::KILL);
+        let _ = crate::platform::runtime::try_wait_child_exit(pid);
     }
 
     fn accept_clients(
@@ -573,7 +570,7 @@ mod session_unix {
     fn handle_client_message(
         message: TerminalClientMessage,
         terminal: &mut TerminalCore,
-        pty_fd: libc::c_int,
+        pty_fd: &RuntimeFd,
         stream: &mut UnixStream,
     ) -> Result<bool, String> {
         match message {
@@ -725,74 +722,6 @@ mod session_unix {
                 _ => None,
             }
         }
-    }
-
-    enum ReadFdError {
-        WouldBlock,
-        Closed,
-        Other(String),
-    }
-
-    fn read_fd(fd: libc::c_int, buffer: &mut [u8]) -> Result<usize, ReadFdError> {
-        let read_count =
-            unsafe { libc::read(fd, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len()) };
-        if read_count > 0 {
-            return Ok(read_count as usize);
-        }
-        if read_count == 0 {
-            return Ok(0);
-        }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(code) if code == libc::EINTR || code == libc::EAGAIN => {
-                Err(ReadFdError::WouldBlock)
-            }
-            Some(code) if code == libc::EIO || code == libc::EBADF => Err(ReadFdError::Closed),
-            _ => Err(ReadFdError::Other(format!(
-                "Failed to read runtime terminal PTY: {err}"
-            ))),
-        }
-    }
-
-    fn set_fd_nonblocking(fd: libc::c_int) -> Result<(), String> {
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 {
-            return Err(format!(
-                "Failed to read terminal fd flags: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(format!(
-                "Failed to set terminal fd nonblocking: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
-    }
-
-    fn try_wait_child(pid: libc::pid_t) -> Result<Option<i32>, String> {
-        let mut status = 0_i32;
-        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        if waited == 0 {
-            return Ok(None);
-        }
-        if waited == pid {
-            if libc::WIFEXITED(status) {
-                return Ok(Some(libc::WEXITSTATUS(status) as i32));
-            }
-            if libc::WIFSIGNALED(status) {
-                return Ok(Some(128 + libc::WTERMSIG(status) as i32));
-            }
-            return Ok(Some(1));
-        }
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ECHILD) {
-            return Ok(Some(0));
-        }
-        Err(format!(
-            "Failed while waiting for runtime terminal child {pid}: {err}"
-        ))
     }
 
     struct TerminalCore {

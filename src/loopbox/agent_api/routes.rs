@@ -60,6 +60,30 @@ pub(super) fn build_router(state: AgentApiState) -> Router {
             &format!("/{AGENT_API_VERSION}/projects/{{project}}/services/{{service}}/input"),
             post(service_input_handler),
         )
+        .route(
+            &format!("/{AGENT_API_VERSION}/clusters"),
+            get(list_clusters_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/clusters/discover"),
+            get(cluster_discover_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/clusters/import"),
+            post(cluster_import_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/clusters/{{cluster}}"),
+            get(cluster_detail_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/clusters/{{cluster}}/wireguard/start"),
+            post(cluster_wireguard_start_handler),
+        )
+        .route(
+            &format!("/{AGENT_API_VERSION}/clusters/{{cluster}}/wireguard/stop"),
+            post(cluster_wireguard_stop_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -180,6 +204,85 @@ async fn list_projects_handler() -> Result<Json<ProjectsResponse>, ApiError> {
         });
     }
     Ok(Json(ProjectsResponse { projects }))
+}
+
+async fn list_clusters_handler() -> Result<Json<ClustersResponse>, ApiError> {
+    let config = load_config_api()?;
+    let clusters = cluster_summaries(&config)
+        .map_err(ApiError::bad_request)?
+        .into_iter()
+        .map(kubernetes_cluster_dto)
+        .collect();
+    Ok(Json(ClustersResponse { clusters }))
+}
+
+async fn cluster_discover_handler() -> Result<Json<ClusterDiscoveryResponse>, ApiError> {
+    let config = load_config_api()?;
+    let clusters = discover_kubernetes_clusters(&config)
+        .map_err(ApiError::bad_request)?
+        .into_iter()
+        .map(kubernetes_cluster_discovery_dto)
+        .collect();
+    Ok(Json(ClusterDiscoveryResponse { clusters }))
+}
+
+async fn cluster_import_handler(
+    State(state): State<AgentApiState>,
+    Json(request): Json<ClusterImportRequest>,
+) -> Result<Json<ClusterImportResponse>, ApiError> {
+    let _guard = lock_mutation(&state)?;
+    let mut config = load_config_api()?;
+    let imported = import_kubernetes_clusters(&mut config, &request.clusters)
+        .map_err(ApiError::bad_request)?;
+    let saved_config_path = save_config(&config)
+        .map_err(|err| ApiError::internal(format!("Failed to save config: {err}")))?
+        .display()
+        .to_string();
+    let clusters = cluster_summaries(&config)
+        .map_err(ApiError::bad_request)?
+        .into_iter()
+        .map(kubernetes_cluster_dto)
+        .collect();
+    Ok(Json(ClusterImportResponse {
+        imported,
+        saved_config_path,
+        clusters,
+    }))
+}
+
+async fn cluster_detail_handler(
+    Path(cluster_name): Path<String>,
+    Query(query): Query<ClusterDetailQuery>,
+) -> Result<Json<KubernetesClusterDto>, ApiError> {
+    let config = load_config_api()?;
+    let snapshot =
+        cluster_snapshot_for_namespace(&config, &cluster_name, query.namespace.as_deref())
+            .map_err(map_cluster_error)?;
+    Ok(Json(kubernetes_cluster_dto(snapshot)))
+}
+
+async fn cluster_wireguard_start_handler(
+    Path(cluster_name): Path<String>,
+) -> Result<Json<ClusterMutationResponse>, ApiError> {
+    let config = load_config_api()?;
+    start_cluster_wireguard(&config, &cluster_name).map_err(map_cluster_error)?;
+    Ok(Json(ClusterMutationResponse {
+        cluster: cluster_name,
+        action: "wireguard_start",
+        message: "WireGuard start requested.".to_string(),
+    }))
+}
+
+async fn cluster_wireguard_stop_handler(
+    Path(cluster_name): Path<String>,
+) -> Result<Json<ClusterMutationResponse>, ApiError> {
+    let config = load_config_api()?;
+    stop_cluster_wireguard(&config, &cluster_name).map_err(map_cluster_error)?;
+    Ok(Json(ClusterMutationResponse {
+        cluster: cluster_name,
+        action: "wireguard_stop",
+        message: "WireGuard stop requested.".to_string(),
+    }))
 }
 
 async fn project_detail_handler(
