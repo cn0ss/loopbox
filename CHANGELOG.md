@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.6 - 2026-05-13
+
+### Fixed
+- Fixed CI Clippy failures in the Kubernetes cluster release.
+- Made the sidebar version label use the Cargo package version as the single source of truth.
+
 ## v0.3.5 - 2026-05-13
 
 ### Added

@@ -1,6 +1,6 @@
 [package]
 name = "loopbox"
-version = "0.3.5"
+version = "0.3.6"
 authors = ["Niklas Schmidt <niklas@niklasschmidt.dev>"]
 homepage = "https://loopbox.tech/"
 license = "PolyForm-Noncommercial-1.0.0"
