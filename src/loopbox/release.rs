@@ -18,9 +18,7 @@ struct GitHubReleasePayload {
 }
 
 pub fn app_version_label() -> String {
-    normalize_release_tag(
-        option_env!("LOOPBOX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
-    )
+    normalize_release_tag(env!("CARGO_PKG_VERSION"))
 }
 
 pub fn latest_release_page_url() -> String {
@@ -121,7 +119,15 @@ fn parse_semver_like(tag: &str) -> Option<(u64, u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer_release_tag, normalize_release_tag};
+    use super::{app_version_label, is_newer_release_tag, normalize_release_tag};
+
+    #[test]
+    fn app_version_label_uses_cargo_package_version() {
+        assert_eq!(
+            app_version_label(),
+            normalize_release_tag(env!("CARGO_PKG_VERSION"))
+        );
+    }
 
     #[test]
     fn normalize_release_tag_keeps_expected_format() {

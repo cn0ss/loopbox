@@ -137,19 +137,19 @@ pub(super) fn update_configured_cluster(
 
     cluster.name = name.to_string();
     cluster.provider = provider_from_value(&draft.provider);
-    cluster.kubeconfig_path = draft
-        .kubeconfig_path
-        .trim()
-        .is_empty()
-        .then(|| None)
-        .unwrap_or_else(|| Some(draft.kubeconfig_path.trim().to_string()));
+    let kubeconfig_path = draft.kubeconfig_path.trim();
+    cluster.kubeconfig_path = if kubeconfig_path.is_empty() {
+        None
+    } else {
+        Some(kubeconfig_path.to_string())
+    };
     cluster.context = context.to_string();
-    cluster.default_namespace = draft
-        .default_namespace
-        .trim()
-        .is_empty()
-        .then(|| "default".to_string())
-        .unwrap_or_else(|| draft.default_namespace.trim().to_string());
+    let default_namespace = draft.default_namespace.trim();
+    cluster.default_namespace = if default_namespace.is_empty() {
+        "default".to_string()
+    } else {
+        default_namespace.to_string()
+    };
 
     Ok(cluster.name.clone())
 }

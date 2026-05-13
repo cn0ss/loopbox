@@ -126,7 +126,7 @@ pub(crate) fn App() -> Element {
             tokio::time::sleep(std::time::Duration::from_millis(900)).await;
             // Only invalidate render scopes that need live data — peek() doesn't subscribe.
             let needs_tick = matches!(
-                current_page.peek().clone(),
+                *current_page.peek(),
                 Page::Sandboxes
                     | Page::Runtime
                     | Page::Clusters

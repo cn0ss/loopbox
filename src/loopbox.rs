@@ -229,18 +229,13 @@ pub struct KubernetesClusterConfig {
     pub wireguard: Option<WireGuardTunnelConfig>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KubernetesProvider {
+    #[default]
     KubeconfigContext,
     Local,
     Remote,
-}
-
-impl Default for KubernetesProvider {
-    fn default() -> Self {
-        Self::KubeconfigContext
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,17 +251,12 @@ pub struct WireGuardTunnelConfig {
     pub required: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WireGuardMode {
+    #[default]
     WgQuick,
     Manual,
-}
-
-impl Default for WireGuardMode {
-    fn default() -> Self {
-        Self::WgQuick
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

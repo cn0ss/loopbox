@@ -1420,13 +1420,15 @@ pub fn service_runtime_status(
                             &effective_ports
                         };
                         if !service_ports_healthy(
-                            config,
-                            project,
-                            project_name,
-                            service_name,
+                            ServiceHealthCheckContext {
+                                config,
+                                project,
+                                project_name,
+                                service_name,
+                                targets: &runtime_targets,
+                                host: &running.host,
+                            },
                             health_ports,
-                            &runtime_targets,
-                            &running.host,
                             &mut store.health_checks,
                         ) {
                             state = ServiceRuntimeState::Unhealthy;
@@ -1500,13 +1502,15 @@ pub fn service_runtime_status(
                     .lock()
                     .map_err(|_| "Runtime store lock poisoned.".to_string())?;
                 if !service_ports_healthy(
-                    config,
-                    project,
-                    project_name,
-                    service_name,
+                    ServiceHealthCheckContext {
+                        config,
+                        project,
+                        project_name,
+                        service_name,
+                        targets: &runtime_targets,
+                        host: &host,
+                    },
                     &effective_ports,
-                    &runtime_targets,
-                    &host,
                     &mut store.health_checks,
                 ) {
                     state = ServiceRuntimeState::Unhealthy;

@@ -103,13 +103,15 @@ pub(super) fn container_runtime_status(
                     .lock()
                     .map_err(|_| "Runtime store lock poisoned.".to_string())?;
                 !service_ports_healthy(
-                    config,
-                    project,
-                    project_name,
-                    &service.name,
+                    ServiceHealthCheckContext {
+                        config,
+                        project,
+                        project_name,
+                        service_name: &service.name,
+                        targets: &runtime_targets,
+                        host,
+                    },
                     &ports,
-                    &runtime_targets,
-                    host,
                     &mut store.health_checks,
                 )
             } {

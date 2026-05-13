@@ -56,14 +56,18 @@ pub(super) fn healthcheck_ok(targets: &[String], host: &str, port: u16, health_p
     false
 }
 
+pub(super) struct ServiceHealthCheckContext<'a> {
+    pub(super) config: &'a LoopboxConfig,
+    pub(super) project: &'a ProjectConfig,
+    pub(super) project_name: &'a str,
+    pub(super) service_name: &'a str,
+    pub(super) targets: &'a [String],
+    pub(super) host: &'a str,
+}
+
 pub(super) fn service_ports_healthy(
-    config: &LoopboxConfig,
-    project: &ProjectConfig,
-    project_name: &str,
-    service_name: &str,
+    context: ServiceHealthCheckContext<'_>,
     ports: &[ServicePortConfig],
-    targets: &[String],
-    host: &str,
     health_checks: &mut HashMap<String, CachedHealthCheck>,
 ) -> bool {
     // Health checks are opt-in per port via health_path.
@@ -81,15 +85,22 @@ pub(super) fn service_ports_healthy(
 
         if !port_reachable_with_targets(
             entry.port,
-            targets,
+            context.targets,
             HEALTHCHECK_RETRIES,
             HEALTHCHECK_TIMEOUT_MS,
         ) {
             return false;
         }
 
-        let interval_secs = effective_health_check_interval_secs(config, project, entry);
-        let cache_key = health_check_cache_key(project_name, service_name, entry, targets, host);
+        let interval_secs =
+            effective_health_check_interval_secs(context.config, context.project, entry);
+        let cache_key = health_check_cache_key(
+            context.project_name,
+            context.service_name,
+            entry,
+            context.targets,
+            context.host,
+        );
         if let Some(cached) = health_checks.get(&cache_key) {
             let fresh = cached
                 .checked_at
@@ -111,7 +122,8 @@ pub(super) fn service_ports_healthy(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
-                let healthy = healthcheck_ok(targets, host, entry.port, health_path);
+                let healthy =
+                    healthcheck_ok(context.targets, context.host, entry.port, health_path);
                 health_checks.insert(
                     cache_key,
                     CachedHealthCheck {
@@ -130,7 +142,7 @@ pub(super) fn service_ports_healthy(
                 .map(str::trim)
                 .filter(|value| !value.is_empty());
             if let Some(target) = grpc_target {
-                let healthy = grpc_healthcheck_ok(targets, entry.port, Some(target));
+                let healthy = grpc_healthcheck_ok(context.targets, entry.port, Some(target));
                 health_checks.insert(
                     cache_key,
                     CachedHealthCheck {
